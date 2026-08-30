@@ -37,22 +37,29 @@ cd frontend && npm install && npm run dev
 
 ## Docker 部署结构
 
-前端和后端保持两个独立应用：`frontend` 只负责 SvelteKit，`backend` 只负责 Axum。Docker 构建阶段分别编译两者，部署时由 Nginx 组合为同一个访问入口，PostgreSQL 单独运行：
+前端和后端保持两个独立应用：`frontend` 只负责 SvelteKit，`backend` 只负责 Axum。Docker 构建阶段分别编译两者，运行时通过独立端口提供服务，PostgreSQL 单独运行：
 
 ```text
 deploy/docker/
 ├── backend.Dockerfile   Rust API 与 SeaORM migrations 构建
 ├── frontend.Dockerfile  SvelteKit Web 构建
-├── nginx.conf           / 与 /api/ 路由
-└── compose.yml          Backend、Frontend、Nginx、PostgreSQL 组合部署
+└── compose.yml          Backend、Frontend、PostgreSQL 组合部署
 ```
 
 不要在 API 镜像构建前端源码，也不要把业务领域拆成独立 Rust crate；后端业务边界按 `backend/src/{domain,application,infrastructure,modules}` 组织。
 
-复制 `.env.example` 为 `.env`，替换数据库账号、密码和 JWT 密钥后，由部署环境执行：
+复制 `.env.example` 为 `.env`，替换数据库账号、密码、JWT 密钥和浏览器可访问的 `PUBLIC_API_BASE_URL` 后，由部署环境执行：
 
 ```bash
 docker compose -f deploy/docker/compose.yml up -d --build
 ```
+
+默认访问地址：
+
+- 前端：`http://127.0.0.1:3000`
+- 后端：`http://127.0.0.1:8080`
+- 健康检查：`http://127.0.0.1:8080/healthz`
+
+本项目不内置 Nginx 或其他反向代理；如果生产环境需要统一域名、HTTPS 或路径转发，请在现有基础设施中配置网关。
 
 本项目仅提供 Docker 构建配置静态骨架，本次未执行实际 Docker build。
