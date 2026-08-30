@@ -1,3 +1,13 @@
+pub use crate::departments::Entity as Departments;
+pub mod department_closure;
+pub mod departments;
 pub mod jwt_refresh_tokens;
+pub mod operation_logs;
 pub mod prelude;
+pub mod project_department_grants;
+pub mod project_members;
+pub mod project_statuses;
+pub mod projects;
+pub mod tasks;
+pub mod user_departments;
 pub mod users;

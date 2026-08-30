@@ -3,6 +3,8 @@ pub use sea_orm_migration::prelude::*;
 
 mod m20260830_000001_initial_schema;
 mod m20260830_000002_auth_constraints;
+mod m20260830_000003_task_numbering;
+mod m20260830_000004_department_closure;
 
 pub struct Migrator;
 
@@ -12,6 +14,8 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20260830_000001_initial_schema::Migration),
             Box::new(m20260830_000002_auth_constraints::Migration),
+            Box::new(m20260830_000003_task_numbering::Migration),
+            Box::new(m20260830_000004_department_closure::Migration),
         ]
     }
 }
