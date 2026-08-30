@@ -232,3 +232,19 @@ operation_logs (task_id, created_at desc) where task_id is not null
 6. 项目概览统计可维护 counter 表或异步刷新。
 7. 每个高频列表接口必须有固定排序，例如 `(updated_at desc, id desc)` 或 `(position, id)`。
 8. 阶段 0 准备 1,000,000 条任务种子数据，验证项目列表、看板首屏、任务列表、任务详情、日志查询和日志导出的实际耗时。
+
+---
+
+## 8. 当前实现状态（2026-08-30）
+
+已实现的后端业务模块：
+
+- `auth`：本地账号密码、Argon2、Access/Refresh JWT、刷新、登出和修改密码。
+- `departments`：部门树创建、列表、修改、逻辑删除，以及基于闭包表的父部门向下查看子部门。
+- `projects`：项目列表、创建、详情、修改、归档、恢复、逻辑删除、成员管理和部门授权。
+- `tasks`：任务/子任务分页、创建、更新、状态流转、逻辑删除、恢复和子任务列表。
+- `audit`：项目/任务日志查询和不脱敏 CSV 导出。
+
+所有业务代码仍位于 `backend/src`，没有把业务模块拆成独立 Rust crate；`backend/entity` 和 `backend/migrations` 仅承担 SeaORM Entity 与版本化迁移职责。前端位于独立的 `frontend/`，Docker Compose 负责组合启动前端 Node SSR 服务、Rust API 服务和 PostgreSQL；前端与后端使用独立端口通信，不引入 Nginx。
+
+当前分页接口仍以 `page/page_size` 为主，任务规模达到百万级后，项目任务列表和日志列表应继续演进为 cursor/keyset pagination，并用真实 PostgreSQL `EXPLAIN (ANALYZE, BUFFERS)` 验证索引策略。
