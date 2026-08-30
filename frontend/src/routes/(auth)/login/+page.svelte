@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { apiPost } from '$lib/api/client';
-  import { session, type AuthSession } from '$lib/features/auth/session.svelte';
+  import { login } from '$lib/api/auth';
+  import { session } from '$lib/features/auth/session.svelte';
 
   let account = $state('');
   let password = $state('');
@@ -18,10 +18,7 @@
 
     submitting = true;
     try {
-      const response = await apiPost<AuthSession>('/auth/login', {
-        account: account.trim(),
-        password
-      });
+      const response = await login(account.trim(), password);
       session.set(response.data);
       await goto('/');
     } catch (error) {
