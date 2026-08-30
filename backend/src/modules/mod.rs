@@ -5,3 +5,5 @@ pub mod departments;
 pub mod milestones;
 pub mod projects;
 pub mod tasks;
+
+pub mod search;

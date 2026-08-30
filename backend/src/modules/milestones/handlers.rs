@@ -1,60 +1,110 @@
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    Json,
-};
-
 use crate::{
     http::{
         error::{success, ApiEnvelope, AppError},
         extractors::CurrentUser,
     },
-    modules::milestones::service,
+    modules::milestones::service::{
+        self, CreateMilestoneRequest, DeleteMilestoneRequest, MilestoneListResponse, MilestoneView,
+        StatusOrderRequest, UpdateMilestoneRequest,
+    },
     state::AppState,
 };
-
-fn map_status_error(error: service::StatusError) -> AppError {
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
+use uuid::Uuid;
+fn map_error(error: service::MilestoneError) -> AppError {
     match error {
-        service::StatusError::NotFound => AppError {
+        service::MilestoneError::NotFound => AppError {
             status: StatusCode::NOT_FOUND,
             code: "not_found",
-            message: "项目不存在".to_owned(),
+            message: "项目或里程碑不存在".to_owned(),
         },
-        service::StatusError::Forbidden => AppError {
+        service::MilestoneError::Forbidden => AppError {
             status: StatusCode::FORBIDDEN,
             code: "forbidden",
-            message: "没有当前项目的读取权限".to_owned(),
+            message: "没有项目管理权限".to_owned(),
         },
-        service::StatusError::Database(error) => {
-            tracing::error!(?error, "project status operation failed");
-            AppError::internal("项目状态服务暂时不可用")
+        service::MilestoneError::InvalidInput(m) => AppError::bad_request(m),
+        service::MilestoneError::Database(e) => {
+            tracing::error!(?e, "milestone operation failed");
+            AppError::internal("里程碑服务暂时不可用")
+        }
+        service::MilestoneError::Serialization(e) => {
+            tracing::error!(?e, "milestone audit serialization failed");
+            AppError::internal("里程碑操作记录暂时不可用")
         }
     }
 }
-
 pub async fn statuses(
-    State(state): State<AppState>,
-    current_user: CurrentUser,
-    Path(project_key): Path<String>,
+    State(s): State<AppState>,
+    u: CurrentUser,
+    Path(k): Path<String>,
 ) -> Result<Json<ApiEnvelope<Vec<service::ProjectStatusView>>>, AppError> {
-    let response = service::list_statuses(&state.db, &current_user, &project_key)
-        .await
-        .map_err(map_status_error)?;
-    Ok(success(response))
+    Ok(success(
+        service::list_statuses(&s.db, &u, &k)
+            .await
+            .map_err(map_error)?,
+    ))
 }
-
-pub async fn reorder_statuses() -> crate::http::error::ApiResponse {
-    crate::http::error::placeholder("statuses", "reorder")
+pub async fn reorder_statuses(
+    State(s): State<AppState>,
+    u: CurrentUser,
+    Path(k): Path<String>,
+    Json(r): Json<StatusOrderRequest>,
+) -> Result<Json<ApiEnvelope<Vec<service::ProjectStatusView>>>, AppError> {
+    Ok(success(
+        service::reorder_statuses(&s.db, &u, &k, r)
+            .await
+            .map_err(map_error)?,
+    ))
 }
-pub async fn list() -> crate::http::error::ApiResponse {
-    crate::http::error::placeholder("milestones", "list")
+pub async fn list(
+    State(s): State<AppState>,
+    u: CurrentUser,
+    Path(k): Path<String>,
+) -> Result<Json<ApiEnvelope<MilestoneListResponse>>, AppError> {
+    Ok(success(
+        service::list(&s.db, &u, &k).await.map_err(map_error)?,
+    ))
 }
-pub async fn create() -> crate::http::error::ApiResponse {
-    crate::http::error::placeholder("milestones", "create")
+pub async fn create(
+    State(s): State<AppState>,
+    u: CurrentUser,
+    Path(k): Path<String>,
+    Json(r): Json<CreateMilestoneRequest>,
+) -> Result<Json<ApiEnvelope<MilestoneView>>, AppError> {
+    Ok(success(
+        service::create(&s.db, &u, &k, r).await.map_err(map_error)?,
+    ))
 }
-pub async fn update() -> crate::http::error::ApiResponse {
-    crate::http::error::placeholder("milestones", "update")
+pub async fn update(
+    State(s): State<AppState>,
+    u: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(r): Json<UpdateMilestoneRequest>,
+) -> Result<Json<ApiEnvelope<MilestoneView>>, AppError> {
+    Ok(success(
+        service::update(&s.db, &u, id, r).await.map_err(map_error)?,
+    ))
 }
-pub async fn delete() -> crate::http::error::ApiResponse {
-    crate::http::error::placeholder("milestones", "logical_delete")
+pub async fn delete(
+    State(s): State<AppState>,
+    u: CurrentUser,
+    Path(id): Path<Uuid>,
+    request: Option<Json<DeleteMilestoneRequest>>,
+) -> Result<Json<ApiEnvelope<serde_json::Value>>, AppError> {
+    service::delete(
+        &s.db,
+        &u,
+        id,
+        request
+            .map(|Json(v)| v)
+            .unwrap_or(DeleteMilestoneRequest { reason: None }),
+    )
+    .await
+    .map_err(map_error)?;
+    Ok(success(serde_json::json!({"message":"里程碑已逻辑删除"})))
 }

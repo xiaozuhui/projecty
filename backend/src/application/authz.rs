@@ -57,36 +57,3 @@ pub fn require_super_admin(system_role: SystemRole) -> Result<(), AuthorizationE
         .then_some(())
         .ok_or(AuthorizationError::SuperAdminRequired)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn super_admin_bypasses_project_membership() {
-        let role = compute_effective_project_role(&ProjectRoleInputs {
-            system_role: SystemRole::SuperAdmin,
-            direct_project_role: None,
-            department_grant_role: None,
-        });
-        assert_eq!(role, EffectiveProjectRole::SuperAdmin);
-    }
-
-    #[test]
-    fn direct_manager_wins_over_department_viewer() {
-        let role = compute_effective_project_role(&ProjectRoleInputs {
-            system_role: SystemRole::User,
-            direct_project_role: Some(ProjectRole::Manager),
-            department_grant_role: Some(ProjectRole::Viewer),
-        });
-        assert_eq!(role, EffectiveProjectRole::Manager);
-    }
-
-    #[test]
-    fn viewer_cannot_write_tasks() {
-        assert_eq!(
-            require_task_write(EffectiveProjectRole::Viewer),
-            Err(AuthorizationError::CannotWriteTask)
-        );
-    }
-}

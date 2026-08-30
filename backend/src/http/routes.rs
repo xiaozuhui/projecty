@@ -13,12 +13,9 @@ pub fn api_router() -> Router<AppState> {
             .merge(modules::milestones::routes::routes())
             .merge(modules::comments::routes::routes())
             .merge(modules::audit::routes::routes())
-            .route("/search", get(search)),
+            .merge(modules::search::routes::routes()),
     )
 }
 async fn healthz() -> Json<serde_json::Value> {
     Json(json!({"status": "ok", "service": "projecty-api"}))
-}
-async fn search() -> Json<serde_json::Value> {
-    Json(json!({"data": [], "meta": {"request_id": "dev-request"}}))
 }

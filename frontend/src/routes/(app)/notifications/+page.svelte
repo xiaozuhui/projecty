@@ -1,3 +1,3 @@
 <script lang="ts">import PageHeader from '$lib/components/PageHeader.svelte';</script>
-<PageHeader title="通知" eyebrow="System" description="阶段 2 接入站内通知。" />
-<section class="workspace-card"><p>页面骨架已预留，等待 API 和权限逻辑接入。</p></section>
+<PageHeader title="通知" eyebrow="Notifications" description="站内通知暂未纳入当前项目管理 API 范围。" /><section class="workspace-card notice"><div class="notice-icon">○</div><h2>暂无通知</h2><p>当前版本聚焦项目、任务、子任务、权限和操作日志；通知中心将在后续领域模块接入。</p></section>
+<style>.notice{text-align:center;padding:56px 24px}.notice-icon{display:grid;place-items:center;width:52px;height:52px;margin:0 auto 16px;border-radius:50%;color:var(--color-primary);background:var(--color-primary-soft);font-size:30px}.notice h2{margin:0 0 8px}.notice p{max-width:480px;margin:0 auto;color:var(--color-text-muted);line-height:1.7}</style>

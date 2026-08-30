@@ -1,76 +1,21 @@
 export type SystemRole = 'super_admin' | 'user';
 export type ProjectRole = 'manager' | 'member' | 'viewer';
 export type Priority = 'urgent' | 'high' | 'medium' | 'low' | 'none';
-
-export type MeResponse = {
-  id: string;
-  account: string;
-  display_name: string;
-  system_role: SystemRole;
-};
-
-export type ProjectView = {
-  id: string;
-  project_key: string;
-  name: string;
-  description: string | null;
-  primary_department_id: string | null;
-  archived_at: string | null;
-  created_at: string;
-  updated_at: string;
-  task_number_seed: number;
-};
-
-export type ProjectListResponse = {
-  items: ProjectView[];
-  page: number;
-  page_size: number;
-  has_more: boolean;
-};
-
-export type ProjectStatus = {
-  id: string;
-  project_id: string;
-  name: string;
-  category: string;
-  sort_order: number;
-  is_default: boolean;
-  created_at: string;
-};
-
-export type TaskView = {
-  id: string;
-  task_key: string;
-  project_id: string;
-  parent_task_id: string | null;
-  task_number: number;
-  title: string;
-  description: string | null;
-  priority: Priority;
-  status_id: string;
-  assignee_id: string | null;
-  reporter_id: string;
-  due_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-export type TaskListResponse = {
-  items: TaskView[];
-  page: number;
-  page_size: number;
-  has_more: boolean;
-};
-
-export type DepartmentView = {
-  id: string;
-  parent_id: string | null;
-  name: string;
-  code: string;
-  sort_order: number;
-  created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-};
-
+export type MeResponse = { id: string; account: string; display_name: string; system_role: SystemRole };
+export type ProjectView = { id: string; project_key: string; name: string; description: string | null; primary_department_id: string | null; archived_at: string | null; created_at: string; updated_at: string; task_number_seed: number };
+export type ProjectListResponse = { items: ProjectView[]; page: number; page_size: number; has_more: boolean };
+export type ProjectStatus = { id: string; project_id: string; name: string; category: string; sort_order: number; is_default: boolean; created_at: string };
+export type TaskView = { id: string; task_key: string; project_id: string; parent_task_id: string | null; task_number: number; title: string; description: string | null; priority: Priority; status_id: string; assignee_id: string | null; reporter_id: string; due_at: string | null; created_at: string; updated_at: string };
+export type TaskListResponse = { items: TaskView[]; page: number; page_size: number; has_more: boolean };
+export type DepartmentView = { id: string; parent_id: string | null; name: string; code: string; sort_order: number; created_at: string; updated_at: string; deleted_at: string | null };
 export type DepartmentListResponse = { items: DepartmentView[] };
+export type ProjectMember = { user_id: string; account: string; display_name: string; role: ProjectRole; created_at: string; revoked_at: string | null };
+export type ProjectMemberListResponse = { items: ProjectMember[] };
+export type ProjectDepartmentGrant = { department_id: string; role: 'member' | 'viewer'; created_at: string; revoked_at: string | null };
+export type ProjectDepartmentGrantListResponse = { items: ProjectDepartmentGrant[] };
+export type Milestone = { id: string; project_id: string; name: string; due_date: string | null; is_reached: boolean; created_at: string; updated_at: string; deleted_at: string | null };
+export type MilestoneListResponse = { items: Milestone[] };
+export type Comment = { id: string; task_id: string; author_id: string; author_name: string; body: string; created_at: string; updated_at: string; deleted_at: string | null };
+export type OperationLog = { id: string; actor_user_id: string; module: string; action: string; project_id: string | null; task_id: string | null; target_type: string; target_id: string | null; summary: string; diff: unknown; snapshot: unknown; created_at: string };
+export type AuditListResponse = { items: OperationLog[]; page: number; page_size: number; has_more: boolean };
+export type SearchResult = { projects: ProjectView[]; tasks: TaskView[]; users: { id: string; account: string; display_name: string }[] };

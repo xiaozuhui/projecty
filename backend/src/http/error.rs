@@ -1,6 +1,6 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::modules::auth::service::AuthError;
 
@@ -15,8 +15,6 @@ pub struct ResponseMeta {
     pub request_id: String,
 }
 
-pub type ApiResponse = Json<ApiEnvelope<Value>>;
-
 pub fn success<T: Serialize>(data: T) -> Json<ApiEnvelope<T>> {
     Json(ApiEnvelope {
         data,
@@ -24,10 +22,6 @@ pub fn success<T: Serialize>(data: T) -> Json<ApiEnvelope<T>> {
             request_id: "dev-request".to_owned(),
         },
     })
-}
-
-pub fn placeholder(module: &'static str, operation: &'static str) -> ApiResponse {
-    success(json!({ "message": "not implemented", "module": module, "operation": operation }))
 }
 
 #[derive(Debug, Serialize)]

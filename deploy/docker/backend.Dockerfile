@@ -11,8 +11,6 @@ COPY backend/migrations/Cargo.toml backend/migrations/Cargo.toml
 
 # 复制源码后编译后端 API 和数据库迁移命令。
 COPY backend backend
-COPY backend/entity backend/entity
-COPY backend/migrations backend/migrations
 RUN cargo build --release -p projecty-api -p projecty-migration
 
 FROM debian:bookworm-slim AS runtime

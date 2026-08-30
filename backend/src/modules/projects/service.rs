@@ -60,7 +60,7 @@ pub struct CreateProjectRequest {
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub primary_department_id: Option<Uuid>,
+    pub primary_department_id: Option<Option<Uuid>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,7 +288,7 @@ pub async fn update(
 ) -> Result<ProjectView, ProjectError> {
     let project = find_project(db, project_key).await?;
     require_manager(db, current_user, project.id).await?;
-    if let Some(primary_department_id) = request.primary_department_id {
+    if let Some(primary_department_id) = request.primary_department_id.flatten() {
         ensure_department(db, primary_department_id).await?;
     }
     let old = serde_json::to_value(&project)?;
@@ -300,11 +300,12 @@ pub async fn update(
         diff.insert("name".to_owned(), json!(name));
     }
     if let Some(description) = request.description {
-        active.description = Set(Some(description.clone()));
+        let description = description.trim().to_owned();
+        active.description = Set((!description.is_empty()).then_some(description.clone()));
         diff.insert("description".to_owned(), json!(description));
     }
     if let Some(primary_department_id) = request.primary_department_id {
-        active.primary_department_id = Set(Some(primary_department_id));
+        active.primary_department_id = Set(primary_department_id);
         diff.insert(
             "primary_department_id".to_owned(),
             json!(primary_department_id),

@@ -1,23 +1,14 @@
 import { apiGet, apiPatch, apiPost } from './client';
-import type { TaskListResponse, TaskView } from './types';
-
-export function listTasks(projectKey: string, page = 1, pageSize = 20) {
-  return apiGet<TaskListResponse>(`/projects/${encodeURIComponent(projectKey)}/tasks?page=${page}&page_size=${pageSize}`);
-}
-export function getTask(taskKey: string) { return apiGet<TaskView>(`/tasks/${encodeURIComponent(taskKey)}`); }
-export function getSubtasks(taskKey: string) { return apiGet<TaskView[]>(`/tasks/${encodeURIComponent(taskKey)}/subtasks`); }
-export function createTask(projectKey: string, input: { title: string; description?: string; priority?: string; status_id?: string }) {
-  return apiPost<TaskView>(`/projects/${encodeURIComponent(projectKey)}/tasks`, input);
-}
-export function createSubtask(taskKey: string, input: { title: string; description?: string; priority?: string; status_id?: string }) {
-  return apiPost<TaskView>(`/tasks/${encodeURIComponent(taskKey)}/subtasks`, input);
-}
-export function updateTask(taskKey: string, input: { title?: string; description?: string; priority?: string }) {
-  return apiPatch<TaskView>(`/tasks/${encodeURIComponent(taskKey)}`, input);
-}
-export function transitionTask(taskKey: string, statusId: string) {
-  return apiPost<TaskView>(`/tasks/${encodeURIComponent(taskKey)}/transition`, { status_id: statusId });
-}
-export function deleteTask(taskKey: string, reason?: string) {
-  return apiPost<{ message: string }>(`/tasks/${encodeURIComponent(taskKey)}/delete`, reason ? { reason } : {});
-}
+import type { Comment, TaskListResponse, TaskView } from './types';
+const key = (value: string) => encodeURIComponent(value);
+export function listTasks(projectKey: string, page = 1, pageSize = 20, filters: { statusId?: string; parentTaskId?: string } = {}) { const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) }); if (filters.statusId) params.set('status_id', filters.statusId); if (filters.parentTaskId) params.set('parent_task_id', filters.parentTaskId); return apiGet<TaskListResponse>(`/projects/${key(projectKey)}/tasks?${params}`); }
+export function getTask(taskKey: string) { return apiGet<TaskView>(`/tasks/${key(taskKey)}`); }
+export function getSubtasks(taskKey: string) { return apiGet<TaskView[]>(`/tasks/${key(taskKey)}/subtasks`); }
+export function createTask(projectKey: string, input: { title: string; description?: string; priority?: string; status_id?: string; due_at?: string | null }) { return apiPost<TaskView>(`/projects/${key(projectKey)}/tasks`, input); }
+export function createSubtask(taskKey: string, input: { title: string; description?: string; priority?: string; status_id?: string; due_at?: string | null }) { return apiPost<TaskView>(`/tasks/${key(taskKey)}/subtasks`, input); }
+export function updateTask(taskKey: string, input: { title?: string; description?: string; priority?: string; due_at?: string | null }) { return apiPatch<TaskView>(`/tasks/${key(taskKey)}`, input); }
+export function transitionTask(taskKey: string, statusId: string) { return apiPost<TaskView>(`/tasks/${key(taskKey)}/transition`, { status_id: statusId }); }
+export function deleteTask(taskKey: string, reason?: string) { return apiPost<{ message: string }>(`/tasks/${key(taskKey)}/delete`, reason ? { reason } : {}); }
+export function listComments(taskKey: string) { return apiGet<Comment[]>(`/tasks/${key(taskKey)}/comments`); }
+export function createComment(taskKey: string, body: string) { return apiPost<Comment>(`/tasks/${key(taskKey)}/comments`, { body }); }
+export function deleteComment(commentId: string, reason?: string) { return apiPost<{ message: string }>(`/comments/${key(commentId)}/delete`, reason ? { reason } : {}); }

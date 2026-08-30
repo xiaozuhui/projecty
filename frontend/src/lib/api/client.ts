@@ -102,9 +102,15 @@ export function apiPatch<T>(path: string, body: unknown, token?: string): Promis
   });
 }
 
-export async function apiDownload(path: string, token?: string): Promise<Blob> {
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+export async function apiDownload(path: string, token?: string, allowRefresh = true): Promise<Blob> {
+  const headers = new Headers(token ? { Authorization: `Bearer ${token}` } : undefined);
+  if (!token && session.accessToken) headers.set('Authorization', `Bearer ${session.accessToken}`);
   const response = await fetch(`${API_BASE_URL}${path}`, { headers });
+  if (response.status === 401 && allowRefresh && session.refreshToken) {
+    const refreshed = await refreshSession();
+    if (refreshed) return apiDownload(path, undefined, false);
+    session.clear();
+  }
   if (!response.ok) throw await parseError(response);
   return response.blob();
 }
