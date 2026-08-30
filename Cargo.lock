@@ -1258,15 +1258,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "migration"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "sea-orm-migration",
- "tokio",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1584,6 +1575,15 @@ dependencies = [
  "sea-orm",
  "serde",
  "uuid",
+]
+
+[[package]]
+name = "projecty-migration"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "sea-orm-migration",
+ "tokio",
 ]
 
 [[package]]

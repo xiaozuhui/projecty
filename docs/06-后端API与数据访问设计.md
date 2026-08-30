@@ -9,41 +9,46 @@
 
 ```text
 projecty/
-├── apps/
-│   ├── api/
-│   │   └── src/
-│   │       ├── main.rs
-│   │       ├── app.rs
-│   │       ├── config.rs
-│   │       ├── state.rs
-│   │       ├── http/
-│   │       │   ├── routes.rs
-│   │       │   ├── middleware.rs
-│   │       │   ├── extractors.rs
-│   │       │   └── error.rs
-│   │       ├── domain/              领域类型与不变式
-│   │       ├── application/         用例编排与权限策略
-│   │       ├── infrastructure/      SeaORM 连接与基础设施适配
-│   │       └── modules/
-│   │           ├── auth/
-│   │           ├── departments/
-│   │           ├── projects/
-│   │           ├── tasks/
-│   │           ├── milestones/
-│   │           ├── comments/
-│   │           └── audit/
-│   └── web/
-│       ├── src/routes/
-│       ├── src/lib/
-│       └── svelte.config.js
-├── migration/
-├── entity/
+├── backend/
+│   ├── Cargo.toml
+│   ├── src/
+│   │   ├── main.rs
+│   │   ├── app.rs
+│   │   ├── config.rs
+│   │   ├── state.rs
+│   │   ├── http/
+│   │   │   ├── routes.rs
+│   │   │   ├── middleware.rs
+│   │   │   ├── extractors.rs
+│   │   │   └── error.rs
+│   │   ├── domain/              领域类型与不变式
+│   │   ├── application/         用例编排与权限策略
+│   │   ├── infrastructure/      SeaORM 连接与基础设施适配
+│   │   └── modules/             按业务领域组织的 HTTP 模块
+│   │       ├── auth/
+│   │       ├── departments/
+│   │       ├── projects/
+│   │       ├── tasks/
+│   │       ├── milestones/
+│   │       ├── comments/
+│   │       └── audit/
+│   ├── entity/                  SeaORM Entity 定义
+│   └── migrations/              SeaORM migrations 包
+│       ├── Cargo.toml
+│       └── src/
+│           ├── lib.rs           Migrator 注册入口，不是业务模块
+│           ├── main.rs           SeaORM CLI 入口
+│           └── m202...rs         每个版本一个迁移文件
+├── frontend/
+│   ├── src/routes/
+│   ├── src/lib/
+│   └── svelte.config.js
 ├── deploy/docker/
 ├── docs/
 └── Cargo.toml
 ```
 
-不要让 Axum handler 直接拼接复杂查询、修改多个表并决定权限。handler 只做 HTTP 适配，业务放 application service。业务模块不拆成独立 Rust crate，统一收拢在 `apps/api/src` 内，通过模块边界保持可测试性。
+不要让 Axum handler 直接拼接复杂查询、修改多个表并决定权限。handler 只做 HTTP 适配，业务放 application service。业务模块不拆成独立 Rust crate，统一收拢在 `backend/src` 内，通过模块边界保持可测试性。
 
 ---
 
@@ -77,7 +82,7 @@ pub struct AppState {
 
 ## 3. SeaORM 使用原则
 
-- migration 是数据库 schema 的权威变更记录。
+- migrations 是数据库 schema 的权威变更记录。
 - entity 与 migration 同步。
 - 复杂查询封装在 repository/query object 中。
 - 更新任务、状态、编号、逻辑删除、操作日志时明确事务边界。

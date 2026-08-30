@@ -1,5 +1,5 @@
 [package]
-name = "migration"
+name = "projecty-migration"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true

@@ -5,15 +5,15 @@ WORKDIR /src
 
 # 先复制依赖描述，便于 Docker 利用依赖编译缓存。
 COPY Cargo.toml Cargo.lock ./
-COPY apps/api/Cargo.toml apps/api/Cargo.toml
-COPY entity/Cargo.toml entity/Cargo.toml
-COPY migration/Cargo.toml migration/Cargo.toml
+COPY backend/Cargo.toml backend/Cargo.toml
+COPY backend/entity/Cargo.toml backend/entity/Cargo.toml
+COPY backend/migrations/Cargo.toml backend/migrations/Cargo.toml
 
 # 复制源码后编译后端 API 和数据库迁移命令。
-COPY apps/api apps/api
-COPY entity entity
-COPY migration migration
-RUN cargo build --release -p projecty-api -p migration
+COPY backend backend
+COPY backend/entity backend/entity
+COPY backend/migrations backend/migrations
+RUN cargo build --release -p projecty-api -p projecty-migration
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -22,7 +22,7 @@ RUN apt-get update \
     && useradd --create-home --uid 10001 projecty
 
 COPY --from=builder /src/target/release/projecty-api /usr/local/bin/projecty-api
-COPY --from=builder /src/target/release/migration /usr/local/bin/projecty-migration
+COPY --from=builder /src/target/release/projecty-migration /usr/local/bin/projecty-migration
 
 USER projecty
 EXPOSE 8080

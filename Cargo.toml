@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-  "apps/api",
-  "entity",
-  "migration",
+  "backend",
+  "backend/entity",
+  "backend/migrations",
 ]
 
 [workspace.package]

@@ -1,4 +1,6 @@
-import { PUBLIC_API_BASE_URL } from '$env/static/public';
+import { env } from '$env/dynamic/public';
+
+const API_BASE_URL = env.PUBLIC_API_BASE_URL || '/api/v1';
 
 export type ApiEnvelope<T> = {
   data: T;
@@ -6,7 +8,7 @@ export type ApiEnvelope<T> = {
 };
 
 export async function apiGet<T>(path: string, token?: string): Promise<ApiEnvelope<T>> {
-  const response = await fetch(`${PUBLIC_API_BASE_URL}${path}`, {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {}
   });
   if (!response.ok) throw new Error(`API 请求失败：${response.status}`);

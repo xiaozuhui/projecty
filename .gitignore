@@ -7,10 +7,10 @@
 
 # Node / SvelteKit
 node_modules
-apps/web/.svelte-kit
-apps/web/build
-apps/web/.vite
-apps/web/.env
+frontend/.svelte-kit
+frontend/build
+frontend/.vite
+frontend/.env
 
 # Environment
 .env

@@ -1,11 +1,11 @@
 fmt:
 	cargo fmt --all
 
-api-dev:
+backend-dev:
 	cargo run -p projecty-api
 
-web-dev:
-	cd apps/web && npm run dev
+frontend-dev:
+	cd frontend && npm run dev
 
-web-check:
-	cd apps/web && npm run check
+frontend-check:
+	cd frontend && npm run check
