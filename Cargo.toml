@@ -2,9 +2,6 @@
 resolver = "2"
 members = [
   "apps/api",
-  "crates/domain",
-  "crates/application",
-  "crates/infrastructure",
   "entity",
   "migration",
 ]

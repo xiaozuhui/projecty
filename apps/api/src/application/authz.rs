@@ -1,4 +1,4 @@
-use projecty_domain::permissions::{EffectiveProjectRole, ProjectRole, SystemRole};
+use crate::domain::permissions::{EffectiveProjectRole, ProjectRole, SystemRole};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]

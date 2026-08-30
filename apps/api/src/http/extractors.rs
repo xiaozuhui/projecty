@@ -1,4 +1,4 @@
-use projecty_domain::permissions::SystemRole;
+use crate::domain::permissions::SystemRole;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]

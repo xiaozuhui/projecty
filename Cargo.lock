@@ -1565,36 +1565,14 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
- "projecty-application",
- "projecty-domain",
- "projecty-infrastructure",
  "sea-orm",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "projecty-application"
-version = "0.1.0"
-dependencies = [
- "projecty-domain",
- "serde",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "projecty-domain"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "thiserror",
  "uuid",
 ]
 
@@ -1606,14 +1584,6 @@ dependencies = [
  "sea-orm",
  "serde",
  "uuid",
-]
-
-[[package]]
-name = "projecty-infrastructure"
-version = "0.1.0"
-dependencies = [
- "sea-orm",
- "tracing",
 ]
 
 [[package]]

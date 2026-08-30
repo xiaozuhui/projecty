@@ -1,6 +1,4 @@
-use projecty_domain::tasks::{
-    validate_two_level_task_rule, NewTaskParent, TaskKind, TaskRuleError,
-};
+use crate::domain::tasks::{validate_two_level_task_rule, NewTaskParent, TaskKind, TaskRuleError};
 
 pub fn classify_new_task(parent: NewTaskParent) -> Result<TaskKind, TaskRuleError> {
     validate_two_level_task_rule(&parent)

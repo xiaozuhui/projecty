@@ -21,6 +21,9 @@ projecty/
 │   │       │   ├── middleware.rs
 │   │       │   ├── extractors.rs
 │   │       │   └── error.rs
+│   │       ├── domain/              领域类型与不变式
+│   │       ├── application/         用例编排与权限策略
+│   │       ├── infrastructure/      SeaORM 连接与基础设施适配
 │   │       └── modules/
 │   │           ├── auth/
 │   │           ├── departments/
@@ -33,17 +36,14 @@ projecty/
 │       ├── src/routes/
 │       ├── src/lib/
 │       └── svelte.config.js
-├── crates/
-│   ├── domain/
-│   ├── application/
-│   └── infrastructure/
 ├── migration/
 ├── entity/
+├── deploy/docker/
 ├── docs/
 └── Cargo.toml
 ```
 
-不要让 Axum handler 直接拼接复杂查询、修改多个表并决定权限。handler 只做 HTTP 适配，业务放 application service。
+不要让 Axum handler 直接拼接复杂查询、修改多个表并决定权限。handler 只做 HTTP 适配，业务放 application service。业务模块不拆成独立 Rust crate，统一收拢在 `apps/api/src` 内，通过模块边界保持可测试性。
 
 ---
 

@@ -1,14 +1,17 @@
 #![allow(dead_code)]
 
 mod app;
+mod application;
 mod config;
+mod domain;
 mod http;
+mod infrastructure;
 mod modules;
 mod state;
 
+use crate::infrastructure::db::connect_database;
 use crate::{config::Config, state::AppState};
 use anyhow::Context;
-use projecty_infrastructure::db::connect_database;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
