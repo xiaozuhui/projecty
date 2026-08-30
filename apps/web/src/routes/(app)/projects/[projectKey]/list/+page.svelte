@@ -1,0 +1,3 @@
+<script lang="ts">import PageHeader from '$lib/components/PageHeader.svelte';</script>
+<PageHeader title="任务列表" eyebrow="List" description="筛选条件同步 URL，后端使用游标分页。" />
+<section class="workspace-card"><table><thead><tr><th>编号</th><th>标题</th><th>状态</th><th>负责人</th><th>更新</th></tr></thead><tbody><tr><td>PROJ-1</td><td>任务骨架</td><td><span class="status-pill">进行中</span></td><td>许</td><td>今天</td></tr></tbody></table></section><style>table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--color-border);padding:12px}@media(max-width:640px){table,thead,tbody,tr,td{display:block}th{display:none}}</style>

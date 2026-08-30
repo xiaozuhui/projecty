@@ -1,0 +1,12 @@
+.page-grid { display: grid; gap: 18px; }
+.workspace-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); padding: 18px; }
+.page-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.page-title h1 { margin: 0 0 6px; font-size: clamp(24px, 3vw, 34px); letter-spacing: -0.04em; }
+.page-title p { margin: 0; color: var(--color-text-muted); }
+.primary-button, .secondary-button, .danger-button { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+.primary-button { color: #fff; background: var(--color-primary); }
+.secondary-button { color: var(--color-text-secondary); background: #f0f3fa; }
+.danger-button { color: #fff; background: var(--color-danger); }
+.status-pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 700; background: var(--color-primary-soft); color: var(--color-primary-strong); }
+.status-pill::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+@media (max-width: 768px) { .page-title { align-items: stretch; flex-direction: column; } }

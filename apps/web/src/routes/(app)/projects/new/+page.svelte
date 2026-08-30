@@ -1,0 +1,3 @@
+<script lang="ts">import PageHeader from '$lib/components/PageHeader.svelte';</script>
+<PageHeader title="新建项目" eyebrow="Project" description="创建项目后添加多个负责人、成员和部门授权。" />
+<form class="workspace-card project-form"><label>项目 Key<input placeholder="例如 PROJ-OPS" /></label><label>项目名称<input placeholder="请输入项目名称" /></label><label>主属部门<select><option>研发中心</option><option>交付中心</option></select></label><label>描述<textarea rows="5" placeholder="项目目标与边界"></textarea></label><button class="primary-button" type="button">保存草稿</button></form><style>.project-form{display:grid;gap:14px;max-width:760px}label{display:grid;gap:6px;font-weight:700}input,select,textarea{border:1px solid var(--color-border);border-radius:10px;padding:11px 12px}</style>

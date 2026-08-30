@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Rust
+/target
+**/*.rs.bk
+
+# Node / SvelteKit
+node_modules
+apps/web/.svelte-kit
+apps/web/build
+apps/web/.vite
+apps/web/.env
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# IDE
+.idea
+.vscode

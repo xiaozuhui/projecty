@@ -1,0 +1,3 @@
+<script lang="ts">import PageHeader from '$lib/components/PageHeader.svelte';</script>
+<PageHeader title="任务看板" eyebrow="Board" description="按状态列分批加载任务，桌面端横向滚动。" />
+<section class="board-columns"><article><h2>待办</h2><p>PROJ-1 需求梳理</p></article><article><h2>进行中</h2><p>PROJ-2 API 骨架</p></article><article><h2>已完成</h2><p>PROJ-3 设计文档</p></article></section><style>.board-columns{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(280px,1fr);gap:14px;overflow-x:auto}.board-columns article{background:#fff;border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:16px;min-height:220px}.board-columns p{background:#f7f9fc;border-radius:12px;padding:12px}</style>

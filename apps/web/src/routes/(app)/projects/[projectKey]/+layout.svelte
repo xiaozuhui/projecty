@@ -1,0 +1,3 @@
+<script lang="ts">let { children } = $props(); const tabs = [['概览','./'],['看板','./board'],['列表','./list'],['时间线','./timeline'],['日历','./calendar'],['子任务','./subtasks'],['里程碑','./milestones'],['成员','./members'],['日志','./logs'],['设置','./settings']];</script>
+<div class="project-layout"><nav class="project-tabs" aria-label="项目导航">{#each tabs as [label, href]}<a href={href}>{label}</a>{/each}</nav>{@render children()}</div>
+<style>.project-tabs{display:flex;gap:8px;margin-bottom:18px;overflow-x:auto}.project-tabs a{flex:0 0 auto;padding:9px 12px;border-radius:999px;background:#fff;border:1px solid var(--color-border);color:var(--color-text-secondary);font-weight:700}</style>
