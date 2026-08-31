@@ -1,7 +1,7 @@
 import { env } from '$env/dynamic/public';
 import { session, type AuthSession } from '$lib/features/auth/session.svelte';
 
-const API_BASE_URL = (env.PUBLIC_API_BASE_URL || '/api/v1').replace(/\/$/, '');
+export const API_BASE_URL = (env.PUBLIC_API_BASE_URL || '/api/v1').replace(/\/$/, '');
 
 export type ApiEnvelope<T> = {
   data: T;

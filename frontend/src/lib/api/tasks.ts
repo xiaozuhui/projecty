@@ -10,5 +10,5 @@ export function updateTask(taskKey: string, input: { title?: string; description
 export function transitionTask(taskKey: string, statusId: string) { return apiPost<TaskView>(`/tasks/${key(taskKey)}/transition`, { status_id: statusId }); }
 export function deleteTask(taskKey: string, reason?: string) { return apiPost<{ message: string }>(`/tasks/${key(taskKey)}/delete`, reason ? { reason } : {}); }
 export function listComments(taskKey: string) { return apiGet<Comment[]>(`/tasks/${key(taskKey)}/comments`); }
-export function createComment(taskKey: string, body: string) { return apiPost<Comment>(`/tasks/${key(taskKey)}/comments`, { body }); }
+export function createComment(taskKey: string, body: string, attachmentIds: string[] = []) { return apiPost<Comment>(`/tasks/${key(taskKey)}/comments`, { body, attachment_ids: attachmentIds.length ? attachmentIds : undefined }); }
 export function deleteComment(commentId: string, reason?: string) { return apiPost<{ message: string }>(`/comments/${key(commentId)}/delete`, reason ? { reason } : {}); }
