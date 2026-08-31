@@ -1,7 +1,7 @@
 //! 任务用例：分页查询、两层子任务、逻辑删除和操作日志事务。
 
 use chrono::{DateTime, Utc};
-use projecty_entity::{operation_logs, project_members, project_statuses, projects, tasks};
+use projecty_entity::{operation_logs, project_members, project_statuses, projects, tasks, users};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
     EntityTrait, FromQueryResult, IntoActiveModel, PaginatorTrait, QueryFilter, QueryOrder,
@@ -9,12 +9,13 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::{
     application::{authz, task_rules},
     domain::{
-        permissions::{EffectiveProjectRole, ProjectRole},
+        permissions::{EffectiveProjectRole, ProjectRole, SystemRole},
         tasks::NewTaskParent,
     },
     http::extractors::CurrentUser,
@@ -68,8 +69,20 @@ pub struct UpdateTaskRequest {
     pub title: Option<String>,
     pub description: Option<String>,
     pub priority: Option<String>,
-    pub assignee_id: Option<Uuid>,
-    pub due_at: Option<DateTime<Utc>>,
+    // 双层 Option:字段缺省=不修改,显式 null=清空,配合 double_option 反序列化。
+    #[serde(default, deserialize_with = "double_option")]
+    pub assignee_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub due_at: Option<Option<DateTime<Utc>>>,
+}
+
+/// 把 JSON null 与字段缺失区分开:缺失走 serde default 得 None(不改),null 得 Some(None)(清空)。
+fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +115,7 @@ pub struct TaskView {
     pub status_id: Uuid,
     pub position: i64,
     pub assignee_id: Option<Uuid>,
+    pub assignee_name: Option<String>,
     pub reporter_id: Uuid,
     pub due_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -141,8 +155,10 @@ pub async fn list_project_tasks(
     let mut models = statement.all(db).await?;
     let has_more = models.len() > page_size as usize;
     models.truncate(page_size as usize);
+    let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
+    hydrate_assignees(db, &mut items).await?;
     Ok(TaskListResponse {
-        items: models.into_iter().map(TaskView::from).collect(),
+        items,
         page,
         page_size,
         has_more,
@@ -156,7 +172,9 @@ pub async fn detail(
 ) -> Result<TaskView, TaskError> {
     let task = find_task(db, task_key, false).await?;
     require_read_role(db, current_user, task.project_id).await?;
-    Ok(task.into())
+    let mut view = TaskView::from(task);
+    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    Ok(view)
 }
 
 pub async fn create_project_task(
@@ -198,6 +216,9 @@ async fn create_task(
 ) -> Result<TaskView, TaskError> {
     let title = required_title(request.title)?;
     let priority = normalize_priority(request.priority)?;
+    if let Some(assignee_id) = request.assignee_id {
+        validate_assignee(db, project.id, assignee_id).await?;
+    }
     let txn = db.begin().await?;
 
     let parent = if let Some(parent_id) = request.parent_task_id {
@@ -261,7 +282,9 @@ async fn create_task(
     )
     .await?;
     txn.commit().await?;
-    Ok(task.into())
+    let mut view = TaskView::from(task);
+    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    Ok(view)
 }
 
 pub async fn update(
@@ -290,15 +313,20 @@ pub async fn update(
         diff.insert("priority".to_owned(), json!(priority));
     }
     if let Some(assignee_id) = request.assignee_id {
-        active.assignee_id = Set(Some(assignee_id));
+        if let Some(assignee_id) = assignee_id {
+            validate_assignee(db, task.project_id, assignee_id).await?;
+        }
+        active.assignee_id = Set(assignee_id);
         diff.insert("assignee_id".to_owned(), json!(assignee_id));
     }
     if let Some(due_at) = request.due_at {
-        active.due_at = Set(Some(due_at));
+        active.due_at = Set(due_at);
         diff.insert("due_at".to_owned(), json!(due_at));
     }
     if diff.is_empty() {
-        return Ok(task.into());
+        let mut view = TaskView::from(task);
+        hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+        return Ok(view);
     }
     active.updated_at = Set(Utc::now());
     let txn = db.begin().await?;
@@ -314,7 +342,9 @@ pub async fn update(
     )
     .await?;
     txn.commit().await?;
-    Ok(updated.into())
+    let mut view = TaskView::from(updated);
+    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    Ok(view)
 }
 
 pub async fn transition(
@@ -332,7 +362,9 @@ pub async fn transition(
         .await?
         .ok_or_else(|| TaskError::InvalidInput("目标状态不属于当前项目".to_owned()))?;
     if status.id == task.status_id {
-        return Ok(task.into());
+        let mut view = TaskView::from(task);
+        hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+        return Ok(view);
     }
     let txn = db.begin().await?;
     // 换列后追加到新列末尾,旧列收口补齐空档。
@@ -355,7 +387,9 @@ pub async fn transition(
     )
     .await?;
     txn.commit().await?;
-    Ok(updated.into())
+    let mut view = TaskView::from(updated);
+    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    Ok(view)
 }
 
 /// 看板拖拽落点:换列与列内重排共用,目标列按给定下标插入并整体重编号。
@@ -388,7 +422,9 @@ pub async fn move_task(
     let insert_index = (request.position as usize).min(column.len());
     if same_column && current_index == Some(insert_index) {
         txn.rollback().await?;
-        return Ok(task.into());
+        let mut view = TaskView::from(task);
+        hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+        return Ok(view);
     }
     column.insert(insert_index, task.id);
     for (index, id) in column.iter().enumerate() {
@@ -420,7 +456,9 @@ pub async fn move_task(
     )
     .await?;
     txn.commit().await?;
-    Ok(updated.into())
+    let mut view = TaskView::from(updated);
+    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    Ok(view)
 }
 
 pub async fn delete(
@@ -488,7 +526,9 @@ pub async fn restore(
     )
     .await?;
     txn.commit().await?;
-    Ok(restored.into())
+    let mut view = TaskView::from(restored);
+    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    Ok(view)
 }
 
 pub async fn subtasks(
@@ -498,7 +538,7 @@ pub async fn subtasks(
 ) -> Result<Vec<TaskView>, TaskError> {
     let parent = find_task(db, task_key, false).await?;
     require_read_role(db, current_user, parent.project_id).await?;
-    Ok(tasks::Entity::find()
+    let mut items: Vec<TaskView> = tasks::Entity::find()
         .filter(tasks::Column::ParentTaskId.eq(parent.id))
         .filter(tasks::Column::DeletedAt.is_null())
         .order_by_asc(tasks::Column::TaskNumber)
@@ -506,7 +546,9 @@ pub async fn subtasks(
         .await?
         .into_iter()
         .map(TaskView::from)
-        .collect())
+        .collect();
+    hydrate_assignees(db, &mut items).await?;
+    Ok(items)
 }
 
 fn ensure_project_open(project: &projects::Model) -> Result<(), TaskError> {
@@ -746,6 +788,57 @@ async fn compact_column<C: ConnectionTrait + Send + Sync>(
     Ok(())
 }
 
+/// 批量回填负责人显示名:不去重 assignee 集合后单查 users,避免逐任务 N+1。
+async fn hydrate_assignees(
+    db: &DatabaseConnection,
+    views: &mut [TaskView],
+) -> Result<(), TaskError> {
+    let ids: HashSet<Uuid> = views.iter().filter_map(|view| view.assignee_id).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let names: HashMap<Uuid, String> = users::Entity::find()
+        .filter(users::Column::Id.is_in(ids))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|user| (user.id, user.display_name))
+        .collect();
+    for view in views {
+        view.assignee_name = view.assignee_id.and_then(|id| names.get(&id).cloned());
+    }
+    Ok(())
+}
+
+/// 负责人合法性:存在、未停用、且按其真实系统角色可读该项目。
+async fn validate_assignee(
+    db: &DatabaseConnection,
+    project_id: Uuid,
+    assignee_id: Uuid,
+) -> Result<(), TaskError> {
+    let user = users::Entity::find_by_id(assignee_id)
+        .one(db)
+        .await?
+        .ok_or_else(|| TaskError::InvalidInput("负责人不存在".to_owned()))?;
+    if !user.is_active {
+        return Err(TaskError::InvalidInput("负责人已被停用".to_owned()));
+    }
+    let as_current = CurrentUser {
+        user_id: user.id,
+        account: user.account,
+        system_role: match user.system_role.as_str() {
+            "super_admin" => SystemRole::SuperAdmin,
+            _ => SystemRole::User,
+        },
+    };
+    if !user_can_read_project(db, &as_current, project_id).await? {
+        return Err(TaskError::InvalidInput(
+            "负责人没有当前项目的访问权限".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 async fn write_task_log<C: ConnectionTrait + Send + Sync>(
     conn: &C,
     actor_user_id: Uuid,
@@ -816,6 +909,7 @@ impl From<tasks::Model> for TaskView {
             status_id: value.status_id,
             position: value.position,
             assignee_id: value.assignee_id,
+            assignee_name: None,
             reporter_id: value.reporter_id,
             due_at: value.due_at,
             created_at: value.created_at,
