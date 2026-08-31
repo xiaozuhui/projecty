@@ -13,7 +13,8 @@ pub fn api_router() -> Router<AppState> {
             .merge(modules::milestones::routes::routes())
             .merge(modules::comments::routes::routes())
             .merge(modules::audit::routes::routes())
-            .merge(modules::search::routes::routes()),
+            .merge(modules::search::routes::routes())
+            .merge(modules::users::routes::routes()),
     )
 }
 async fn healthz() -> Json<serde_json::Value> {

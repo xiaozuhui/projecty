@@ -7,3 +7,4 @@ pub mod projects;
 pub mod tasks;
 
 pub mod search;
+pub mod users;

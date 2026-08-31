@@ -10,10 +10,13 @@ projecty-entity = { path = "entity" }
 projecty-migration = { path = "migrations" }
 anyhow.workspace = true
 argon2.workspace = true
+calamine.workspace = true
+clap.workspace = true
 axum.workspace = true
 chrono.workspace = true
 jsonwebtoken.workspace = true
 sea-orm.workspace = true
+rust_xlsxwriter.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
