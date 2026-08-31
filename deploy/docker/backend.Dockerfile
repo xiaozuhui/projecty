@@ -26,9 +26,13 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 10001 projecty
+    && useradd --create-home --uid 10001 projecty \
+    && mkdir -p /var/lib/projecty/uploads \
+    && chown -R projecty:projecty /var/lib/projecty
 
 COPY --from=builder /src/target/release/projecty-api /usr/local/bin/projecty-api
+
+ENV PROJECTY_UPLOAD_DIR=/var/lib/projecty/uploads
 
 USER projecty
 EXPOSE 8080
