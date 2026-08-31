@@ -68,7 +68,7 @@ async function refreshSession(): Promise<boolean> {
 
 async function request<T>(path: string, init: RequestInit = {}, allowRefresh = true): Promise<ApiEnvelope<T>> {
   const headers = new Headers(init.headers);
-  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const token = headers.get('Authorization') ? null : session.accessToken;
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
@@ -113,4 +113,8 @@ export async function apiDownload(path: string, token?: string, allowRefresh = t
   }
   if (!response.ok) throw await parseError(response);
   return response.blob();
+}
+
+export function apiUpload<T>(path: string, form: FormData): Promise<ApiEnvelope<T>> {
+  return request<T>(path, { method: 'POST', body: form });
 }

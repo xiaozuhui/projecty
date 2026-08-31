@@ -19,3 +19,7 @@ export type Comment = { id: string; task_id: string; author_id: string; author_n
 export type OperationLog = { id: string; actor_user_id: string; module: string; action: string; project_id: string | null; task_id: string | null; target_type: string; target_id: string | null; summary: string; diff: unknown; snapshot: unknown; created_at: string };
 export type AuditListResponse = { items: OperationLog[]; page: number; page_size: number; has_more: boolean };
 export type SearchResult = { projects: ProjectView[]; tasks: TaskView[]; users: { id: string; account: string; display_name: string }[] };
+export type UserView = { id: string; account: string; display_name: string; system_role: SystemRole; is_active: boolean; last_login_at: string | null; created_at: string; departments: { id: string; name: string }[] };
+export type UserListResponse = { items: UserView[]; page: number; page_size: number; has_more: boolean };
+export type UserImportRowResult = { row_number: number; account: string; success: boolean; message: string };
+export type UserImportReport = { total: number; succeeded: number; failed: number; rows: UserImportRowResult[] };

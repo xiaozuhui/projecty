@@ -7,10 +7,10 @@
   let { children, user } = $props<{ children: import('svelte').Snippet; user: MeResponse }>();
   let loggingOut = $state(false);
 
-  const navGroups = [
+  const navGroups = $derived([
     { title: '工作台', links: [{ href: '/', label: '总览', mark: '概' }, { href: '/projects', label: '项目', mark: '项' }, { href: '/departments', label: '部门', mark: '部' }, { href: '/search', label: '搜索', mark: '搜' }] },
-    { title: '系统', links: [{ href: '/notifications', label: '通知', mark: '通' }, { href: '/settings/profile', label: '个人设置', mark: '设' }, { href: '/settings/system', label: '系统管理', mark: '管' }] }
-  ];
+    { title: '系统', links: [ ...(user.system_role === 'super_admin' ? [{ href: '/users', label: '用户', mark: '员' }] : []), { href: '/notifications', label: '通知', mark: '通' }, { href: '/settings/profile', label: '个人设置', mark: '设' }, { href: '/settings/system', label: '系统管理', mark: '管' }] }
+  ]);
 
   async function signOut() {
     if (loggingOut) return;
