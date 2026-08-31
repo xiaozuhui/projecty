@@ -1,24 +1,29 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { page } from '$app/state';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import { ApiClientError } from '$lib/api/client';
-  import { listStatuses } from '$lib/api/projects';
+  import { listProjectMembers, listStatuses } from '$lib/api/projects';
   import { createTask, listTasks } from '$lib/api/tasks';
-  import type { ProjectStatus, TaskView } from '$lib/api/types';
+  import type { ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
+  import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
+  import { bindReload } from '$lib/features/ui/page-refresh.svelte';
 
   const projectKey = $derived(String(page.params.projectKey ?? ''));
 
   let tasks = $state<TaskView[]>([]);
   let rootTasks = $state<TaskView[]>([]);
   let statuses = $state<ProjectStatus[]>([]);
+  let members = $state<ProjectMember[]>([]);
   let currentPage = $state(1);
   let hasMore = $state(false);
   let loading = $state(true);
   let submitting = $state(false);
   let showCreate = $state(false);
   let title = $state('');
+  let description = $state('');
   let priority = $state('medium');
+  let assigneeId = $state<string | null>(null);
+  let dueAt = $state('');
   let createStatusId = $state('');
   let statusFilter = $state('');
   let parentFilter = $state('');
@@ -37,19 +42,21 @@
     loading = true;
     errorMessage = '';
     try {
-      const [taskResponse, statusResponse, rootResponse] = await Promise.all([
+      const [taskResponse, statusResponse, rootResponse, memberResponse] = await Promise.all([
         listTasks(projectKey, targetPage, 20, {
           statusId: statusFilter || undefined,
           parentTaskId: parentFilter || undefined
         }),
         listStatuses(projectKey),
-        listTasks(projectKey, 1, 100)
+        listTasks(projectKey, 1, 100),
+        listProjectMembers(projectKey)
       ]);
       tasks = taskResponse.data.items;
       currentPage = taskResponse.data.page;
       hasMore = taskResponse.data.has_more;
       statuses = statusResponse.data;
       rootTasks = rootResponse.data.items.filter((task) => !task.parent_task_id);
+      members = memberResponse.data.items;
       if (!createStatusId && statuses[0]) createStatusId = statuses[0].id;
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务加载失败';
@@ -79,10 +86,16 @@
     try {
       await createTask(projectKey, {
         title: title.trim(),
+        description: description.trim() || undefined,
         priority,
-        status_id: createStatusId || undefined
+        status_id: createStatusId || undefined,
+        assignee_id: assigneeId,
+        due_at: dueAt ? new Date(`${dueAt}T23:59:59`).toISOString() : undefined
       });
       title = '';
+      description = '';
+      assigneeId = null;
+      dueAt = '';
       showCreate = false;
       await load(1);
     } catch (error) {
@@ -92,9 +105,7 @@
     }
   }
 
-  onMount(() => {
-    void load();
-  });
+  bindReload(() => void load());
 </script>
 
 <PageHeader
@@ -141,7 +152,7 @@
 
   {#if showCreate}
     <form class="create-task" onsubmit={submit}>
-      <input bind:value={title} placeholder="输入任务标题，例如：完成权限模型评审" aria-label="任务标题" />
+      <input class="field-title" bind:value={title} placeholder="输入任务标题，例如：完成权限模型评审" aria-label="任务标题" />
       <select bind:value={priority} aria-label="优先级">
         <option value="urgent">紧急</option>
         <option value="high">高</option>
@@ -154,6 +165,9 @@
           <option value={status.id}>{status.name}</option>
         {/each}
       </select>
+      <MemberPicker value={assigneeId} {members} onchange={(value) => (assigneeId = value)} ariaLabel="负责人" />
+      <input class="field-due" type="date" bind:value={dueAt} aria-label="截止日期" />
+      <input class="field-desc" bind:value={description} placeholder="补充描述（可选）" aria-label="任务描述" />
       <button class="primary-button" type="submit" disabled={submitting}>
         {submitting ? '保存中…' : '创建'}
       </button>
@@ -296,13 +310,13 @@
 
   .create-task {
     display: grid;
-    grid-template-columns: minmax(180px, 1fr) 120px 150px auto;
+    grid-template-columns: minmax(180px, 1.6fr) 110px 140px minmax(150px, 1fr) 140px minmax(180px, 1.4fr) auto;
     gap: 8px;
     margin-bottom: 14px;
     padding: 12px;
-    background: #f7f9fc;
-    border: 1px solid var(--color-border);
-    border-radius: 12px;
+    background: var(--color-surface-sunken);
+    border: 1px solid var(--color-border-weak);
+    border-radius: var(--radius-md);
   }
 
   .create-task input,
@@ -432,7 +446,8 @@
       grid-template-columns: 1fr 1fr;
     }
 
-    .create-task input {
+    .field-title,
+    .field-desc {
       grid-column: 1 / -1;
     }
 
