@@ -10,6 +10,7 @@ pub fn routes() -> Router<AppState> {
             "/projects/{project_key}/tasks",
             get(handlers::list_project_tasks).post(handlers::create_project_task),
         )
+        .route("/tasks", get(handlers::list_cross_project_tasks))
         .route(
             "/tasks/{task_key}",
             get(handlers::detail).patch(handlers::update),

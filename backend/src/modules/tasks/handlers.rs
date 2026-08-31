@@ -9,8 +9,9 @@ use crate::{
         extractors::CurrentUser,
     },
     modules::tasks::service::{
-        self, CreateTaskRequest, DeleteTaskRequest, ListTasksQuery, MoveTaskRequest,
-        TaskListResponse, TaskView, TransitionTaskRequest, UpdateTaskRequest,
+        self, CreateTaskRequest, CrossProjectTaskListResponse, CrossProjectTasksQuery,
+        DeleteTaskRequest, ListTasksQuery, MoveTaskRequest, TaskListResponse, TaskView,
+        TransitionTaskRequest, UpdateTaskRequest,
     },
     state::AppState,
 };
@@ -63,6 +64,17 @@ pub async fn create_project_task(
     Json(request): Json<CreateTaskRequest>,
 ) -> Result<Json<ApiEnvelope<TaskView>>, AppError> {
     let response = service::create_project_task(&state.db, &current_user, &project_key, request)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn list_cross_project_tasks(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Query(query): Query<CrossProjectTasksQuery>,
+) -> Result<Json<ApiEnvelope<CrossProjectTaskListResponse>>, AppError> {
+    let response = service::list_cross_project_tasks(&state.db, &current_user, &query)
         .await
         .map_err(map_error)?;
     Ok(success(response))

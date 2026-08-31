@@ -130,6 +130,153 @@ pub struct TaskListResponse {
     pub has_more: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CrossProjectTasksQuery {
+    /// assignee(默认)=我负责的,reporter=我创建的,all=可见项目全部。
+    pub scope: Option<String>,
+    pub page: Option<u64>,
+    pub page_size: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskListItem {
+    #[serde(flatten)]
+    pub task: TaskView,
+    pub project_key: String,
+    pub project_name: String,
+    pub status_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CrossProjectTaskListResponse {
+    pub items: Vec<TaskListItem>,
+    pub page: u64,
+    pub page_size: u64,
+    pub has_more: bool,
+}
+
+/// 跨项目任务列表:可见项目集 = 直接成员 ∪ 部门授权闭包,再叠加 scope 过滤。
+pub async fn list_cross_project_tasks(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    query: &CrossProjectTasksQuery,
+) -> Result<CrossProjectTaskListResponse, TaskError> {
+    let scope = query.scope.as_deref().unwrap_or("assignee");
+    let scope_column = match scope {
+        "assignee" => Some(tasks::Column::AssigneeId),
+        "reporter" => Some(tasks::Column::ReporterId),
+        "all" => None,
+        _ => {
+            return Err(TaskError::InvalidInput(
+                "scope 必须是 assignee/reporter/all".to_owned(),
+            ))
+        }
+    };
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(30).clamp(1, 100);
+    let mut statement = tasks::Entity::find()
+        .filter(tasks::Column::DeletedAt.is_null())
+        .order_by_desc(tasks::Column::UpdatedAt)
+        .order_by_desc(tasks::Column::Id)
+        .offset((page - 1) * page_size)
+        .limit(page_size + 1);
+    if let Some(column) = scope_column {
+        statement = statement.filter(column.eq(current_user.user_id));
+    }
+    if !current_user.system_role.is_super_admin() {
+        let visible = visible_project_ids(db, current_user.user_id).await?;
+        if visible.is_empty() {
+            return Ok(CrossProjectTaskListResponse {
+                items: Vec::new(),
+                page,
+                page_size,
+                has_more: false,
+            });
+        }
+        statement = statement.filter(tasks::Column::ProjectId.is_in(visible));
+    }
+    let mut models = statement.all(db).await?;
+    let has_more = models.len() > page_size as usize;
+    models.truncate(page_size as usize);
+    let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
+    hydrate_assignees(db, &mut items).await?;
+    let items = hydrate_project_context(db, items).await?;
+    Ok(CrossProjectTaskListResponse {
+        items,
+        page,
+        page_size,
+        has_more,
+    })
+}
+
+/// 一次查询展开视图的 project_key/project_name/status_name,批量回填避免逐行查询。
+async fn hydrate_project_context(
+    db: &DatabaseConnection,
+    views: Vec<TaskView>,
+) -> Result<Vec<TaskListItem>, TaskError> {
+    let project_ids: HashSet<Uuid> = views.iter().map(|view| view.project_id).collect();
+    let status_ids: HashSet<Uuid> = views.iter().map(|view| view.status_id).collect();
+    let projects: HashMap<Uuid, (String, String)> = if project_ids.is_empty() {
+        HashMap::new()
+    } else {
+        projects::Entity::find()
+            .filter(projects::Column::Id.is_in(project_ids))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|project| (project.id, (project.project_key, project.name)))
+            .collect()
+    };
+    let statuses: HashMap<Uuid, String> = if status_ids.is_empty() {
+        HashMap::new()
+    } else {
+        project_statuses::Entity::find()
+            .filter(project_statuses::Column::Id.is_in(status_ids))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|status| (status.id, status.name))
+            .collect()
+    };
+    Ok(views
+        .into_iter()
+        .map(|view| {
+            let (project_key, project_name) =
+                projects.get(&view.project_id).cloned().unwrap_or_default();
+            let status_name = statuses.get(&view.status_id).cloned().unwrap_or_default();
+            TaskListItem {
+                task: view,
+                project_key,
+                project_name,
+                status_name,
+            }
+        })
+        .collect())
+}
+
+#[derive(Debug, FromQueryResult)]
+struct VisibleProjectId {
+    id: Uuid,
+}
+
+/// 当前用户可见项目 id 集:直接成员或其部门(含祖先)被授权的项目。
+async fn visible_project_ids(
+    db: &DatabaseConnection,
+    user_id: Uuid,
+) -> Result<Vec<Uuid>, TaskError> {
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT DISTINCT p.id FROM projects p WHERE p.deleted_at IS NULL AND (p.id IN (SELECT pm.project_id FROM project_members pm WHERE pm.user_id = $1 AND pm.revoked_at IS NULL) OR p.id IN (SELECT pdg.project_id FROM project_department_grants pdg JOIN department_closure dc ON dc.ancestor_id = pdg.department_id JOIN user_departments ud ON ud.department_id = dc.descendant_id WHERE ud.user_id = $1 AND pdg.revoked_at IS NULL AND ud.revoked_at IS NULL))",
+        [user_id.into()],
+    );
+    Ok(VisibleProjectId::find_by_statement(statement)
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|row| row.id)
+        .collect())
+}
+
 pub async fn list_project_tasks(
     db: &DatabaseConnection,
     current_user: &CurrentUser,
