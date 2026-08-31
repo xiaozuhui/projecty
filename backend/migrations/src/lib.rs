@@ -5,6 +5,7 @@ mod m20260830_000001_initial_schema;
 mod m20260830_000002_auth_constraints;
 mod m20260830_000003_task_numbering;
 mod m20260830_000004_department_closure;
+mod m20260831_000005_user_last_login_at;
 
 pub struct Migrator;
 
@@ -16,6 +17,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260830_000002_auth_constraints::Migration),
             Box::new(m20260830_000003_task_numbering::Migration),
             Box::new(m20260830_000004_department_closure::Migration),
+            Box::new(m20260831_000005_user_last_login_at::Migration),
         ]
     }
 }
