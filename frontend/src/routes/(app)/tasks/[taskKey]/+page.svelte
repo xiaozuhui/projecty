@@ -4,10 +4,11 @@
   import PageHeader from '$lib/components/PageHeader.svelte';
   import { ApiClientError } from '$lib/api/client';
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
-  import { listStatuses } from '$lib/api/projects';
+  import { listStatuses, listProjectMembers } from '$lib/api/projects';
   import { deleteAttachment, listTaskAttachments, uploadTaskAttachment, attachmentUrl } from '$lib/api/attachments';
-  import { createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, transitionTask } from '$lib/api/tasks';
-  import type { Attachment, Comment, ProjectStatus, TaskView } from '$lib/api/types';
+  import { createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, transitionTask, updateTask } from '$lib/api/tasks';
+  import type { Attachment, Comment, ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
+  import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
 
   const taskKey = $derived(String(page.params.taskKey ?? ''));
   const projectKey = $derived(taskKey.replace(/-\d+$/, ''));
@@ -18,6 +19,7 @@
   let commentBody = $state('');
   let subtasks = $state<TaskView[]>([]);
   let statuses = $state<ProjectStatus[]>([]);
+  let members = $state<ProjectMember[]>([]);
   let selectedStatus = $state('');
   let subtaskTitle = $state('');
   let loading = $state(true);
@@ -36,16 +38,18 @@
     try {
       const taskResponse = await getTask(taskKey);
       task = taskResponse.data;
-      const [subtaskResponse, statusResponse, commentResponse, attachmentResponse] = await Promise.all([
+      const [subtaskResponse, statusResponse, commentResponse, attachmentResponse, memberResponse] = await Promise.all([
         getSubtasks(taskKey),
         listStatuses(projectKey),
         listComments(taskKey),
-        listTaskAttachments(taskKey)
+        listTaskAttachments(taskKey),
+        listProjectMembers(projectKey)
       ]);
       subtasks = subtaskResponse.data;
       statuses = statusResponse.data;
       comments = commentResponse.data;
       attachments = attachmentResponse.data;
+      members = memberResponse.data.items;
       selectedStatus = task.status_id;
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务加载失败';
@@ -122,6 +126,18 @@
     }
   }
 
+  async function changeAssignee(assigneeId: string | null) {
+    if (!task || assigneeId === task.assignee_id) return;
+    submitting = true;
+    try {
+      task = (await updateTask(task.task_key, { assignee_id: assigneeId })).data;
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '负责人修改失败';
+    } finally {
+      submitting = false;
+    }
+  }
+
   // 选图后立刻上传:详情页图片直接落库,评论图片先进暂存区,提交时一并关联。
   async function uploadImages(event: Event, into: 'task' | 'pending') {
     const input = event.currentTarget as HTMLInputElement;
@@ -183,6 +199,10 @@
             {#each statuses as status}<option value={status.id}>{status.name}</option>{/each}
             {#if !statuses.length}<option value={task.status_id}>{statusName(task.status_id)}</option>{/if}
           </select>
+        </div>
+        <div>
+          <span class="field-label">负责人</span>
+          <MemberPicker value={task.assignee_id} {members} disabled={submitting} onchange={changeAssignee} ariaLabel={`设置 ${task.title} 的负责人`} />
         </div>
         <div><span class="field-label">优先级</span><strong class="priority">{priorityName[task.priority]}</strong></div>
         <div><span class="field-label">任务编号</span><strong class="mono">#{task.task_number}</strong></div>
@@ -299,7 +319,7 @@
   h2, p { margin: 0; }
   .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 18px; }
   .main-card { display: grid; gap: 24px; }
-  .field-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--color-border); }
+  .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--color-border); }
   .field-grid > div { display: grid; gap: 7px; min-width: 0; }
   .field-label { color: var(--color-text-muted); font-size: 12px; font-weight: 500; }
   .field-grid select { min-width: 0; }
@@ -353,10 +373,8 @@
   .error-state { color: var(--color-danger); }
   @media (max-width: 900px) {
     .detail-grid { grid-template-columns: 1fr; }
-    .field-grid { grid-template-columns: repeat(2, 1fr); }
   }
   @media (max-width: 560px) {
-    .field-grid { grid-template-columns: 1fr; }
     .subtask-list > a { grid-template-columns: 1fr; gap: 5px; }
     .subtask-form { display: grid; }
     .subtask-form button { width: 100%; }

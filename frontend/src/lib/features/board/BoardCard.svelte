@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Avatar from '$lib/components/Avatar.svelte';
   import PriorityPill from '$lib/components/PriorityPill.svelte';
   import type { TaskView } from '$lib/api/types';
 
@@ -48,7 +49,12 @@
     <PriorityPill priority={task.priority} />
   </span>
   <strong>{task.title}</strong>
-  <small>{task.due_at ? `截止 ${new Date(task.due_at).toLocaleDateString('zh-CN')}` : '未设置截止日期'}</small>
+  <span class="card-bottom">
+    <small>{task.due_at ? `截止 ${new Date(task.due_at).toLocaleDateString('zh-CN')}` : '未设置截止日期'}</small>
+    {#if task.assignee_name}
+      <span class="assignee"><Avatar name={task.assignee_name} size={18} />{task.assignee_name}</span>
+    {/if}
+  </span>
 </a>
 
 <style>
@@ -70,5 +76,7 @@
   .card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .card-top code { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-muted); }
   .board-card strong { font-size: 14px; font-weight: 500; line-height: 1.45; }
+  .card-bottom { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .board-card small { color: var(--color-text-muted); font-size: 12px; }
+  .assignee { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-muted); font-size: 12px; min-width: 0; }
 </style>

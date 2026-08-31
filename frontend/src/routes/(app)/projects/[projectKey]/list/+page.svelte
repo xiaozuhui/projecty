@@ -180,6 +180,7 @@
             <th>标题</th>
             <th>状态</th>
             <th>优先级</th>
+            <th>负责人</th>
             <th>更新时间</th>
           </tr>
         </thead>
@@ -193,6 +194,7 @@
               <td><a class="task-title" href={`/tasks/${task.task_key}`}>{task.title}</a></td>
               <td><span class="status-pill">{statusName(task.status_id)}</span></td>
               <td><span class={`priority priority-${task.priority}`}>{priorityName[task.priority]}</span></td>
+              <td class="muted">{task.assignee_name ?? '未分配'}</td>
               <td class="muted">
                 {new Date(task.updated_at).toLocaleString('zh-CN', {
                   month: 'numeric',
