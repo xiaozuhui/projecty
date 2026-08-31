@@ -1,3 +1,38 @@
-<script lang="ts">let { children } = $props(); const tabs = [['概览','./'],['看板','./board'],['列表','./list'],['时间线','./timeline'],['日历','./calendar'],['子任务','./subtasks'],['里程碑','./milestones'],['成员','./members'],['日志','./logs'],['设置','./settings']];</script>
-<div class="project-layout"><nav class="project-tabs" aria-label="项目导航">{#each tabs as [label, href]}<a href={href}>{label}</a>{/each}</nav>{@render children()}</div>
-<style>.project-tabs{display:flex;gap:8px;margin-bottom:18px;overflow-x:auto}.project-tabs a{flex:0 0 auto;padding:9px 12px;border-radius:999px;background:#fff;border:1px solid var(--color-border);color:var(--color-text-secondary);font-weight:700}</style>
+<script lang="ts">
+  import { page } from '$app/state';
+
+  let { children } = $props();
+
+  const tabs = [
+    { label: '概览', href: './' },
+    { label: '看板', href: './board' },
+    { label: '列表', href: './list' },
+    { label: '时间线', href: './timeline' },
+    { label: '日历', href: './calendar' },
+    { label: '子任务', href: './subtasks' },
+    { label: '里程碑', href: './milestones' },
+    { label: '成员', href: './members' },
+    { label: '日志', href: './logs' },
+    { label: '设置', href: './settings' },
+  ];
+
+  const pathname = $derived(page.url.pathname.replace(/\/+$/, ''));
+  const isActive = (href: string) =>
+    href === './' ? /\/projects\/[^/]+$/.test(pathname) : pathname.endsWith(href.slice(1));
+</script>
+
+<div class="project-layout">
+  <nav class="project-tabs" aria-label="项目导航">
+    {#each tabs as tab}
+      <a href={tab.href} class:active={isActive(tab.href)} aria-current={isActive(tab.href) ? 'page' : undefined}>{tab.label}</a>
+    {/each}
+  </nav>
+  {@render children()}
+</div>
+
+<style>
+  .project-tabs { display: flex; gap: 2px; margin-bottom: 16px; overflow-x: auto; border-bottom: 1px solid var(--color-border); }
+  .project-tabs a { flex: 0 0 auto; padding: 8px 10px; margin-bottom: -1px; border-bottom: 2px solid transparent; color: var(--color-text-muted); font-size: 13px; transition: color var(--transition-fast), border-color var(--transition-fast); }
+  .project-tabs a:hover { color: var(--color-text); }
+  .project-tabs a.active { color: var(--color-text); border-bottom-color: var(--color-primary); }
+</style>

@@ -3,6 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      // 防主题闪烁:首帧渲染前同步设置主题,默认暗色,以 localStorage 记忆为准。
+      try {
+        var theme = localStorage.getItem('projecty.theme');
+        document.documentElement.dataset.theme = theme === 'light' || theme === 'dark' ? theme : 'dark';
+      } catch (error) {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

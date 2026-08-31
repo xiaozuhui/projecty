@@ -40,7 +40,7 @@
 
 <style>
   .session-loading { display: grid; place-items: center; min-height: 100vh; padding: 24px; background: var(--color-bg); }
-  .loading-card { display: grid; gap: 10px; width: min(100%, 360px); padding: 28px; text-align: center; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+  .loading-card { display: grid; gap: 10px; width: min(100%, 360px); padding: 28px; text-align: center; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
   .loading-card p { margin: 0; color: var(--color-text-muted); }
   .loading-card .primary-button { margin: 8px auto 0; }
   .loading-dot { width: 12px; height: 12px; margin: 0 auto 2px; border-radius: 50%; background: var(--color-primary); box-shadow: 0 0 0 7px var(--color-primary-soft); animation: pulse 1.2s ease-in-out infinite; }

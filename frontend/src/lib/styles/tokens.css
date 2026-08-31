@@ -1,25 +1,84 @@
+/* 设计令牌:暗色为默认主题,:root[data-theme='light'] 覆盖为浅色(Linear 风双色板)。 */
 :root {
+  color-scheme: dark;
   --sidebar-width: 240px;
-  --color-primary: #4f7df3;
-  --color-primary-strong: #365fd6;
-  --color-primary-soft: #eef2ff;
-  --color-bg: #f4f6f9;
+
+  /* 表面与背景 */
+  --color-bg: #0f1011;
+  --color-surface: #131416;
+  --color-surface-raised: #1a1c1f;
+  --color-surface-sunken: #08090a;
+
+  /* 边框 */
+  --color-border: #2a2e33;
+  --color-border-strong: #383b3f;
+  --color-border-weak: #24282c;
+
+  /* 文字 */
+  --color-text: #f7f8f8;
+  --color-text-secondary: #d0d6e0;
+  --color-text-muted: #8a8f98;
+
+  /* 主色与语义色 */
+  --color-primary: #5e6ad2;
+  --color-primary-strong: #7b86dd;
+  --color-primary-soft: rgba(94, 106, 210, 0.16);
+  --color-success: #5bb98b;
+  --color-warning: #f2994a;
+  --color-danger: #eb5757;
+
+  /* 交互反馈 */
+  --color-hover: rgba(255, 255, 255, 0.05);
+  --color-press: rgba(255, 255, 255, 0.02);
+  --color-focus-ring: 0 0 0 3px rgba(94, 106, 210, 0.3);
+
+  /* 优先级与状态(按 project_statuses.category) */
+  --priority-urgent: #eb5757;
+  --priority-high: #f2994a;
+  --status-active: #5e6ad2;
+  --status-review: #f2c94c;
+  --status-done: #5bb98b;
+
+  /* 阴影:卡片一律不用投影,仅弹层保留 */
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--color-border-weak);
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* 字体与动效 */
+  --font-ui: "Inter", "PingFang SC", "HarmonyOS Sans SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", "SFMono-Regular", "Cascadia Code", "JetBrains Mono", Menlo, monospace;
+  --transition-fast: 120ms ease;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #f9f9fa;
   --color-surface: #ffffff;
-  --color-border: #e6eaf0;
-  --color-border-strong: #cfd6e4;
+  --color-surface-raised: #ffffff;
+  --color-surface-sunken: #f3f4f6;
+  --color-border: #e5e5e6;
+  --color-border-strong: #c9cbd1;
+  --color-border-weak: #eeeef0;
   --color-text: #1a1a2e;
   --color-text-secondary: #3d465e;
-  --color-text-muted: #8e98b0;
+  --color-text-muted: #71757e;
+  --color-primary-strong: #4349b8;
+  --color-primary-soft: #eef0fb;
   --color-success: #2fa36b;
-  --color-warning: #d68b2d;
+  --color-warning: #b56a1f;
   --color-danger: #d85462;
-  --color-info: #5a78d6;
-  --shadow-sm: 0 2px 8px rgba(26, 37, 67, .05);
-  --shadow-md: 0 12px 32px rgba(26, 37, 67, .10);
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --font-ui: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --font-display: "Noto Sans SC", "PingFang SC", sans-serif;
-  --font-mono: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
+  --color-hover: rgba(0, 0, 0, 0.04);
+  --color-press: rgba(0, 0, 0, 0.02);
+  --color-focus-ring: 0 0 0 3px rgba(94, 106, 210, 0.25);
+  --priority-urgent: #d33535;
+  --priority-high: #b56a1f;
+  --status-active: #4f5ab8;
+  --status-review: #9c7c14;
+  --status-done: #2fa36b;
+  --shadow-popover: 0 8px 24px rgba(26, 26, 46, 0.12), 0 0 0 1px var(--color-border);
 }
