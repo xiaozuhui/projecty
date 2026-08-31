@@ -278,15 +278,15 @@
     min-width: 180px;
     color: var(--color-text-muted);
     font-size: 12px;
-    font-weight: 700;
+    font-weight:500;
   }
 
   .filters select {
     min-width: 0;
     border: 1px solid var(--color-border);
-    border-radius: 9px;
+    border-radius:var(--radius-md);
     padding: 9px 10px;
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text-primary);
   }
 
@@ -299,7 +299,7 @@
     padding: 9px 0;
     background: transparent;
     color: var(--color-primary-strong);
-    font-weight: 700;
+    font-weight:500;
     cursor: pointer;
   }
 
@@ -323,9 +323,9 @@
   .create-task select {
     min-width: 0;
     border: 1px solid var(--color-border);
-    border-radius: 9px;
+    border-radius:var(--radius-md);
     padding: 10px 11px;
-    background: white;
+    background: var(--color-surface);
   }
 
   .error-message {
@@ -354,7 +354,7 @@
   th {
     color: var(--color-text-muted);
     font-size: 12px;
-    font-weight: 700;
+    font-weight:500;
   }
 
   td {
@@ -365,7 +365,7 @@
     color: var(--color-primary-strong);
     font-family: var(--font-mono);
     font-size: 12px;
-    font-weight: 700;
+    font-weight:500;
   }
 
   .task-title:hover,
@@ -387,7 +387,7 @@
 
   .priority {
     font-size: 13px;
-    font-weight: 700;
+    font-weight:500;
   }
 
   .priority-urgent,

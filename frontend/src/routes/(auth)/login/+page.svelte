@@ -57,14 +57,14 @@
 </main>
 
 <style>
-  .login-page { display: grid; place-items: center; min-height: 100vh; padding: 24px; background: radial-gradient(circle at top left, #eef2ff, transparent 34%), var(--color-bg); }
-  .login-card { display: grid; gap: 14px; width: min(100%, 420px); padding: 28px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 22px; box-shadow: var(--shadow-md); }
-  .brand { color: var(--color-primary); font-weight: 900; font-size: 24px; letter-spacing: .02em; }
+  .login-page { display: grid; place-items: center; min-height: 100vh; padding: 24px; background: var(--color-bg); }
+  .login-card { display: grid; gap: 14px; width: min(100%, 420px); padding: 28px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius:var(--radius-lg); box-shadow: var(--shadow-md); }
+  .brand { color: var(--color-primary); font-weight:600; font-size: 24px; letter-spacing: .02em; }
   h1, p { margin: 0; }
   p { color: var(--color-text-muted); line-height: 1.6; }
   form { display: grid; gap: 14px; }
-  label { display: grid; gap: 6px; font-weight: 700; }
-  input { border: 1px solid var(--color-border); border-radius: 10px; padding: 11px 12px; color: var(--color-text); background: var(--color-surface); }
+  label { display: grid; gap: 6px; font-weight:500; }
+  input { border: 1px solid var(--color-border); border-radius:var(--radius-md); padding: 11px 12px; color: var(--color-text); background: var(--color-surface); }
   input:focus { outline: 3px solid var(--color-primary-soft); border-color: var(--color-primary); }
   button { border: 0; cursor: pointer; }
   button:disabled { cursor: wait; opacity: .65; }

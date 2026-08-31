@@ -190,7 +190,15 @@
     <a class="primary-button" href="/projects">返回项目列表</a>
   </div>
 {:else if task}
-  <PageHeader title={task.title} eyebrow={task.task_key} description={task.description || '暂无描述。'} />
+  <PageHeader
+    title={task.title}
+    crumbs={[
+      { label: '任务', href: '/tasks' },
+      { label: projectKey, href: `/projects/${projectKey}/board` },
+      { label: task.task_key }
+    ]}
+    description={task.description || '暂无描述。'}
+  />
   <div class="detail-grid">
     <section class="workspace-card main-card">
       <div class="field-grid">

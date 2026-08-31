@@ -30,7 +30,7 @@
         {/each}
       </nav>
     {:else if eyebrow}
-      <span class="status-pill">{eyebrow}</span>
+      <span class="page-eyebrow">{eyebrow}</span>
     {/if}
     <h1>{title}</h1>
     {#if description}<p>{description}</p>{/if}

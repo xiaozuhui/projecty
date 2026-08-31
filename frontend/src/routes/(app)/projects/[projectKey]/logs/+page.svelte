@@ -109,7 +109,7 @@
     padding: 10px 0;
     color: var(--color-text-muted);
     font-size: 12px;
-    font-weight: 800;
+    font-weight:600;
   }
 
   .log-row {

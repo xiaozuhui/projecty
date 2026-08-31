@@ -253,7 +253,7 @@
   .department-picker label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
   .create-card form > button { justify-self: end; }
   .import-card .import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 10px; }
-  .import-summary { margin-top: 12px; font-weight: 650; }
+  .import-summary { margin-top: 12px; font-weight: 500; }
   .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -261,11 +261,11 @@
   td { padding: 10px; border-bottom: 1px solid var(--color-border); vertical-align: top; }
   td.actions { white-space: nowrap; }
   td.actions .text-button { margin-right: 6px; }
-  .ok { color: #137a3d; font-weight: 650; }
-  .bad { color: var(--color-danger); font-weight: 650; }
+  .ok { color: var(--color-success); font-weight: 500; }
+  .bad { color: var(--color-danger); font-weight: 500; }
   .muted { color: var(--color-text-muted); font-size: 12px; }
   .empty-inline { text-align: center; padding: 22px 0; }
-  .text-button { border: 0; background: transparent; cursor: pointer; font-weight: 700; color: var(--color-primary-strong); }
+  .text-button { border: 0; background: transparent; cursor: pointer; font-weight:500; color: var(--color-primary-strong); }
   .danger-text { color: var(--color-danger); }
   .error-state { color: var(--color-danger); margin-bottom: 16px; }
   .state-box { text-align: center; color: var(--color-text-muted); }
