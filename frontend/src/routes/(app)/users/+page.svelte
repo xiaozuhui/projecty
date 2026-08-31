@@ -4,6 +4,7 @@
   import { listDepartments } from '$lib/api/departments';
   import { me } from '$lib/api/auth';
   import { createUser, downloadUserTemplate, importUsers, listUsers, updateUser, type UserListQuery } from '$lib/api/users';
+  import { alertDialog, confirmDialog, promptDialog } from '$lib/features/ui/dialog.svelte';
   import type { DepartmentView, MeResponse, UserImportReport, UserView } from '$lib/api/types';
 
   let currentUser = $state<MeResponse | null>(null);
@@ -73,7 +74,7 @@
   }
 
   async function rename(user: UserView) {
-    const value = prompt('新的姓名', user.display_name);
+    const value = await promptDialog({ title: '修改姓名', label: '姓名', initial: user.display_name });
     if (!value?.trim() || value.trim() === user.display_name) return;
     try {
       const updated = (await updateUser(user.id, { display_name: value.trim() })).data;
@@ -84,11 +85,11 @@
   }
 
   async function resetPassword(user: UserView) {
-    const value = prompt(`为「${user.display_name}」设置新密码(8-128 位)`);
+    const value = await promptDialog({ title: '重置密码', label: `为「${user.display_name}」设置新密码(8-128 位)`, placeholder: '新密码' });
     if (!value) return;
     try {
       await updateUser(user.id, { password: value });
-      alert('密码已重置，该账号的所有登录会话已失效。');
+      await alertDialog({ title: '密码已重置', message: '该账号的所有登录会话已失效。' });
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : '重置密码失败';
     }
@@ -96,13 +97,13 @@
 
   async function changeDepartments(user: UserView) {
     const current = user.departments.map((item) => item.name).join('/');
-    const value = prompt('调整部门归属：多个部门用 / 分隔，留空表示移出全部部门', current);
+    const value = await promptDialog({ title: '调整部门归属', label: '多个部门用 / 分隔，留空表示移出全部部门', initial: current });
     if (value === null) return;
     const names = value.split('/').map((name) => name.trim()).filter(Boolean);
     const ids: string[] = [];
     for (const name of names) {
       const department = departments.find((item) => item.name === name);
-      if (!department) { alert(`部门不存在：${name}`); return; }
+      if (!department) { await alertDialog({ title: '部门不存在', message: `没有找到部门：${name}` }); return; }
       ids.push(department.id);
     }
     try {
@@ -115,7 +116,7 @@
 
   async function toggleActive(user: UserView) {
     const action = user.is_active ? '停用' : '启用';
-    if (!confirm(`确定${action}「${user.display_name}」吗？`)) return;
+    if (!(await confirmDialog({ title: `${action}账号`, message: `确定${action}「${user.display_name}」吗？`, confirmLabel: action, danger: user.is_active }))) return;
     try {
       const updated = (await updateUser(user.id, { is_active: !user.is_active })).data;
       if (!includeInactive && !updated.is_active) users = users.filter((item) => item.id !== user.id);

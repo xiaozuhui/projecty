@@ -4,6 +4,7 @@
   import { listDepartments, listDepartmentGrants, listProjectMembers, addProjectMember, updateProjectMember, revokeProjectMember, grantDepartment, revokeDepartmentGrant } from '$lib/api/projects';
   import type { DepartmentView, ProjectDepartmentGrant, ProjectMember } from '$lib/api/types';
   import { onMount } from 'svelte';
+  import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   const projectKey = $derived(String(page.params.projectKey ?? ''));
   let members = $state<ProjectMember[]>([]), grants = $state<ProjectDepartmentGrant[]>([]), departments = $state<DepartmentView[]>([]);
   let userId = $state(''), role = $state<'manager'|'member'|'viewer'>('member'), departmentId = $state(''), grantRole = $state<'member'|'viewer'>('member');
@@ -12,9 +13,9 @@
   onMount(load);
   async function addMember(event: SubmitEvent) { event.preventDefault(); if (!userId.trim()) return; saving=true; try { members=(await addProjectMember(projectKey,{user_id:userId.trim(),role})).data.items; userId=''; } catch(e){errorMessage=e instanceof Error?e.message:'添加成员失败'} finally{saving=false} }
   async function changeRole(member: ProjectMember, event: Event) { const value=(event.currentTarget as HTMLSelectElement).value as ProjectMember['role']; try { members=(await updateProjectMember(projectKey,member.user_id,value)).data.items; } catch(e){errorMessage=e instanceof Error?e.message:'修改角色失败'} }
-  async function revoke(member: ProjectMember) { if(!confirm(`确定撤销 ${member.display_name} 的项目成员资格吗？`))return; try{members=(await revokeProjectMember(projectKey,member.user_id)).data.items}catch(e){errorMessage=e instanceof Error?e.message:'撤销失败'} }
+  async function revoke(member: ProjectMember) { if(!(await confirmDialog({ title: '撤销成员', message: `确定撤销 ${member.display_name} 的项目成员资格吗？`, confirmLabel: '撤销', danger: true })))return; try{members=(await revokeProjectMember(projectKey,member.user_id)).data.items}catch(e){errorMessage=e instanceof Error?e.message:'撤销失败'} }
   async function addGrant(event: SubmitEvent) { event.preventDefault(); if(!departmentId)return; saving=true; try{grants=(await grantDepartment(projectKey,departmentId,grantRole)).data.items;departmentId=''}catch(e){errorMessage=e instanceof Error?e.message:'授权失败'}finally{saving=false} }
-  async function revokeGrant(id:string){if(!confirm('确定撤销该部门授权吗？'))return;try{grants=(await revokeDepartmentGrant(projectKey,id)).data.items}catch(e){errorMessage=e instanceof Error?e.message:'撤销授权失败'}}
+  async function revokeGrant(id:string){if(!(await confirmDialog({ title: '撤销部门授权', message: '确定撤销该部门授权吗？', confirmLabel: '撤销', danger: true })))return;try{grants=(await revokeDepartmentGrant(projectKey,id)).data.items}catch(e){errorMessage=e instanceof Error?e.message:'撤销授权失败'}}
 </script>
 <PageHeader title="成员与部门授权" eyebrow="Members" description="项目负责人通过显式成员表达；部门授权只产生 member/viewer 权限。" />
 {#if errorMessage}<div class="workspace-card error-state">{errorMessage}</div>{/if}
