@@ -19,6 +19,7 @@
       title: '工作台',
       links: [
         { href: '/', label: '总览', icon: 'home' },
+        { href: '/tasks', label: '任务', icon: 'tasks' },
         { href: '/projects', label: '项目', icon: 'projects' },
         { href: '/departments', label: '部门', icon: 'departments' },
         { href: '/search', label: '搜索', icon: 'search' },

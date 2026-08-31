@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import { ApiClientError } from '$lib/api/client';
@@ -9,6 +9,7 @@
   import { createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, transitionTask, updateTask } from '$lib/api/tasks';
   import type { Attachment, Comment, ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
+  import { bindReload } from '$lib/features/ui/page-refresh.svelte';
 
   const taskKey = $derived(String(page.params.taskKey ?? ''));
   const projectKey = $derived(taskKey.replace(/-\d+$/, ''));
@@ -118,7 +119,7 @@
     deleting = true;
     try {
       await deleteTask(task.task_key, '用户从任务详情页发起删除');
-      window.location.href = `/projects/${projectKey}`;
+      await goto(`/projects/${projectKey}/board`);
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务删除失败';
     } finally {
@@ -178,7 +179,7 @@
     }
   }
 
-  onMount(() => { void load(); });
+  bindReload(() => void load());
 </script>
 
 {#if loading}
