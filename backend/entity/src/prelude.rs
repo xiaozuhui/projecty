@@ -7,6 +7,7 @@ pub use crate::project_department_grants::Entity as ProjectDepartmentGrants;
 pub use crate::project_members::Entity as ProjectMembers;
 pub use crate::project_statuses::Entity as ProjectStatuses;
 pub use crate::projects::Entity as Projects;
+pub use crate::task_attachments::Entity as TaskAttachments;
 pub use crate::task_comments::Entity as TaskComments;
 pub use crate::tasks::Entity as Tasks;
 pub use crate::user_departments::Entity as UserDepartments;

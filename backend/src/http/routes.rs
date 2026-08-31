@@ -7,6 +7,7 @@ pub fn api_router() -> Router<AppState> {
         "/api/v1",
         Router::new()
             .merge(modules::auth::routes::routes())
+            .merge(modules::attachments::routes::routes())
             .merge(modules::departments::routes::routes())
             .merge(modules::projects::routes::routes())
             .merge(modules::tasks::routes::routes())

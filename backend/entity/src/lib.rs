@@ -9,6 +9,7 @@ pub mod project_department_grants;
 pub mod project_members;
 pub mod project_statuses;
 pub mod projects;
+pub mod task_attachments;
 pub mod task_comments;
 pub mod tasks;
 pub mod user_departments;

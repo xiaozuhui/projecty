@@ -9,7 +9,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::{http::extractors::CurrentUser, modules::tasks::service::user_can_read_project};
+use crate::{
+    http::extractors::CurrentUser,
+    modules::attachments::service::{self as attachment_service, AttachmentError, AttachmentView},
+    modules::tasks::service::user_can_read_project,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommentError {
@@ -23,9 +27,17 @@ pub enum CommentError {
     Database(#[from] sea_orm::DbErr),
 }
 
+fn attachment_error(error: AttachmentError) -> CommentError {
+    match error {
+        AttachmentError::Database(db_error) => CommentError::Database(db_error),
+        other => CommentError::InvalidInput(other.to_string()),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateCommentRequest {
     pub body: String,
+    pub attachment_ids: Option<Vec<Uuid>>,
 }
 #[derive(Debug, Deserialize)]
 pub struct DeleteCommentRequest {
@@ -38,6 +50,7 @@ pub struct CommentView {
     pub author_id: Uuid,
     pub author_name: String,
     pub body: String,
+    pub attachments: Vec<AttachmentView>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -57,7 +70,7 @@ pub async fn list(
         .find_also_related(users::Entity)
         .all(db)
         .await?;
-    Ok(rows
+    let mut views: Vec<CommentView> = rows
         .into_iter()
         .filter_map(|(comment, author)| {
             author.map(|u| CommentView {
@@ -66,12 +79,23 @@ pub async fn list(
                 author_id: comment.author_id,
                 author_name: u.display_name,
                 body: comment.body,
+                attachments: Vec::new(),
                 created_at: comment.created_at,
                 updated_at: comment.updated_at,
                 deleted_at: comment.deleted_at,
             })
         })
-        .collect())
+        .collect();
+    let comment_ids: Vec<Uuid> = views.iter().map(|view| view.id).collect();
+    let by_comment = attachment_service::views_for_comments(db, &comment_ids)
+        .await
+        .map_err(attachment_error)?;
+    for view in &mut views {
+        if let Some(attachments) = by_comment.get(&view.id) {
+            view.attachments = attachments.clone();
+        }
+    }
+    Ok(views)
 }
 
 pub async fn create(
@@ -118,13 +142,29 @@ pub async fn create(
     }
     .insert(&txn)
     .await?;
+    let attachment_ids = request.attachment_ids.unwrap_or_default();
+    if !attachment_ids.is_empty() {
+        attachment_service::link_to_comment(
+            &txn,
+            current_user.user_id,
+            task.id,
+            comment.id,
+            &attachment_ids,
+        )
+        .await
+        .map_err(attachment_error)?;
+    }
     txn.commit().await?;
+    let by_comment = attachment_service::views_for_comments(db, &[comment.id])
+        .await
+        .map_err(attachment_error)?;
     Ok(CommentView {
         id: comment.id,
         task_id: comment.task_id,
         author_id: comment.author_id,
         author_name: author.display_name,
         body: comment.body,
+        attachments: by_comment.get(&comment.id).cloned().unwrap_or_default(),
         created_at: comment.created_at,
         updated_at: comment.updated_at,
         deleted_at: comment.deleted_at,

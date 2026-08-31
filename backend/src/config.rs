@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::{env, net::SocketAddr};
+use std::{env, net::SocketAddr, path::PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -11,6 +11,8 @@ pub struct Config {
     pub jwt_issuer: String,
     pub access_token_ttl_seconds: u64,
     pub refresh_token_ttl_seconds: u64,
+    pub upload_dir: PathBuf,
+    pub upload_max_bytes: usize,
 }
 
 impl Config {
@@ -33,6 +35,13 @@ impl Config {
                 .unwrap_or_else(|_| "1209600".to_owned())
                 .parse()
                 .context("REFRESH_TOKEN_TTL_SECONDS must be a valid integer")?,
+            upload_dir: env::var("PROJECTY_UPLOAD_DIR")
+                .unwrap_or_else(|_| "uploads".to_owned())
+                .into(),
+            upload_max_bytes: env::var("PROJECTY_UPLOAD_MAX_BYTES")
+                .unwrap_or_else(|_| "10485760".to_owned())
+                .parse()
+                .context("PROJECTY_UPLOAD_MAX_BYTES must be a valid integer")?,
         })
     }
     pub fn bind_addr(&self) -> Result<SocketAddr> {
