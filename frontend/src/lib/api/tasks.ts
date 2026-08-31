@@ -8,6 +8,7 @@ export function createTask(projectKey: string, input: { title: string; descripti
 export function createSubtask(taskKey: string, input: { title: string; description?: string; priority?: string; status_id?: string; due_at?: string | null }) { return apiPost<TaskView>(`/tasks/${key(taskKey)}/subtasks`, input); }
 export function updateTask(taskKey: string, input: { title?: string; description?: string; priority?: string; due_at?: string | null }) { return apiPatch<TaskView>(`/tasks/${key(taskKey)}`, input); }
 export function transitionTask(taskKey: string, statusId: string) { return apiPost<TaskView>(`/tasks/${key(taskKey)}/transition`, { status_id: statusId }); }
+export function moveTask(taskKey: string, statusId: string, position: number) { return apiPost<TaskView>(`/tasks/${key(taskKey)}/move`, { status_id: statusId, position }); }
 export function deleteTask(taskKey: string, reason?: string) { return apiPost<{ message: string }>(`/tasks/${key(taskKey)}/delete`, reason ? { reason } : {}); }
 export function listComments(taskKey: string) { return apiGet<Comment[]>(`/tasks/${key(taskKey)}/comments`); }
 export function createComment(taskKey: string, body: string, attachmentIds: string[] = []) { return apiPost<Comment>(`/tasks/${key(taskKey)}/comments`, { body, attachment_ids: attachmentIds.length ? attachmentIds : undefined }); }

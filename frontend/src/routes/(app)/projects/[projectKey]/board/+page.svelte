@@ -1,10 +1,14 @@
 <script lang="ts">
- import { page } from '$app/state'; import { onMount } from 'svelte'; import PageHeader from '$lib/components/PageHeader.svelte'; import { listStatuses } from '$lib/api/projects'; import { listTasks, transitionTask } from '$lib/api/tasks'; import type { ProjectStatus, TaskView } from '$lib/api/types';
- const projectKey=$derived(String(page.params.projectKey ?? '')); let statuses=$state<ProjectStatus[]>([]), tasks=$state<TaskView[]>([]), loading=$state(true), errorMessage=$state('');
- const statusName=(id:string)=>statuses.find(s=>s.id===id)?.name||'未分类';
- onMount(async()=>{try{const [s,t]=await Promise.all([listStatuses(projectKey),listTasks(projectKey,1,100)]);statuses=s.data;tasks=t.data.items}catch(e){errorMessage=e instanceof Error?e.message:'看板加载失败'}finally{loading=false}});
- async function move(task:TaskView,event:Event){const statusId=(event.currentTarget as HTMLSelectElement).value;try{const updated=(await transitionTask(task.task_key,statusId)).data;tasks=tasks.map(item=>item.id===task.id?updated:item)}catch(e){errorMessage=e instanceof Error?e.message:'状态更新失败'}}
+  import { page } from '$app/state';
+  import PageHeader from '$lib/components/PageHeader.svelte';
+  import Board from '$lib/features/board/Board.svelte';
+
+  const projectKey = $derived(String(page.params.projectKey ?? ''));
 </script>
-<PageHeader title="任务看板" eyebrow="Board" description="按项目状态组织任务，状态修改会写入操作日志。" />
-{#if errorMessage}<div class="workspace-card error-state">{errorMessage}</div>{/if}{#if loading}<section class="workspace-card state-box">正在加载看板…</section>{:else}<section class="board-columns">{#each statuses as status}<article class="board-column"><header><div><h2>{status.name}</h2><small>{status.category}</small></div><span>{tasks.filter(t=>t.status_id===status.id).length}</span></header>{#each tasks.filter(t=>t.status_id===status.id) as task}<a class="task-card" href={`/tasks/${task.task_key}`}><div><code>{task.task_key}</code><span class="priority-{task.priority}">{task.priority}</span></div><strong>{task.title}</strong><small>{task.due_at ? `截止 ${new Date(task.due_at).toLocaleDateString('zh-CN')}` : '未设置截止日期'}</small><select value={task.status_id} onchange={(event)=>move(task,event)} onclick={(event)=>event.stopPropagation()} aria-label={`移动 ${task.title}`}><option value={task.status_id}>{statusName(task.status_id)}</option>{#each statuses.filter(s=>s.id!==task.status_id) as other}<option value={other.id}>{other.name}</option>{/each}</select></a>{:else}<div class="empty-column">暂无任务</div>{/each}</article>{:else}<div class="workspace-card state-box">当前项目还没有状态。</div>{/each}</section>{/if}
-<style>.board-columns{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(280px,320px);gap:14px;overflow-x:auto;padding-bottom:8px}.board-column{min-height:420px;padding:14px;background:#eef1f7;border:1px solid var(--color-border);border-radius:var(--radius-lg)}.board-column header{display:flex;justify-content:space-between;align-items:start;margin-bottom:12px}.board-column h2{margin:0 0 4px;font-size:17px}.board-column header small,.task-card small{color:var(--color-text-muted);font-size:12px}.board-column header>span{padding:4px 8px;border-radius:999px;background:#fff;color:var(--color-text-muted);font-size:12px}.task-card{display:grid;gap:10px;margin-bottom:10px;padding:13px;background:#fff;border:1px solid var(--color-border);border-radius:12px;box-shadow:var(--shadow-sm)}.task-card>div{display:flex;justify-content:space-between;gap:10px}.task-card code{font-family:var(--font-mono);font-size:11px;color:var(--color-primary-strong)}.task-card strong{line-height:1.45}.task-card select{width:100%;padding:7px}.priority-urgent{color:var(--color-danger)}.priority-high{color:var(--color-warning)}.priority-medium{color:var(--color-primary)}.priority-low,.priority-none{color:var(--color-text-muted)}.empty-column{padding:24px 8px;color:var(--color-text-muted);text-align:center;border:1px dashed var(--color-border-strong);border-radius:10px}.error-state{color:var(--color-danger);margin-bottom:16px}.state-box{text-align:center;color:var(--color-text-muted)}</style>
+
+<PageHeader
+  title="任务看板"
+  eyebrow="Board"
+  description="拖拽卡片跨列改状态、列内换顺序,列底回车快速建任务。"
+/>
+<Board {projectKey} />
