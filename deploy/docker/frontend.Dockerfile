@@ -4,7 +4,7 @@ FROM node:22-bookworm-slim AS builder
 WORKDIR /src/frontend
 
 COPY frontend/package.json ./
-RUN npm install --no-audit --no-fund
+RUN npm install --no-audit --no-fund --registry=https://registry.npmmirror.com/
 COPY frontend ./
 
 RUN npm run build

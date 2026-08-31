@@ -11,3 +11,4 @@ frontend/build
 frontend/.vite
 .DS_Store
 *.log
+deploy/docker/.env

@@ -1,7 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:1.86-bookworm AS builder
+FROM rust:1.94-bookworm AS builder
 WORKDIR /src
+
+# 容器内直连 crates.io 易超时,改用 rsproxy 镜像源拉取依赖。
+COPY <<'CARGOCONF' /usr/local/cargo/config.toml
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+CARGOCONF
 
 # 先复制依赖描述，便于 Docker 利用依赖编译缓存。
 COPY Cargo.toml Cargo.lock ./
