@@ -1618,6 +1618,7 @@ dependencies = [
  "chrono",
  "jsonwebtoken",
  "projecty-entity",
+ "projecty-migration",
  "sea-orm",
  "serde",
  "serde_json",

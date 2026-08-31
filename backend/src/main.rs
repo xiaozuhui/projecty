@@ -12,6 +12,7 @@ mod state;
 use crate::infrastructure::db::connect_database;
 use crate::{config::Config, state::AppState};
 use anyhow::Context;
+use projecty_migration::{Migrator, MigratorTrait};
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -30,6 +31,9 @@ async fn main() -> anyhow::Result<()> {
     let db = connect_database(&config.database_url)
         .await
         .context("failed to connect postgres database")?;
+    Migrator::up(&db, None)
+        .await
+        .context("failed to apply pending database migrations")?;
     let bind_addr = config.bind_addr()?;
     let listener = TcpListener::bind(bind_addr)
         .await
