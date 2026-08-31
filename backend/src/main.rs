@@ -120,6 +120,9 @@ async fn admin(action: AdminAction) -> anyhow::Result<()> {
     )
     .await
     .map_err(|error| anyhow::anyhow!("创建超级管理员失败:{error}"))?;
-    println!("超级管理员已创建:账号 {},显示名 {}", user.account, user.display_name);
+    println!(
+        "超级管理员已创建:账号 {},显示名 {}",
+        user.account, user.display_name
+    );
     Ok(())
 }

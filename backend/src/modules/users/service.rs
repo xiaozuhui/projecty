@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use projecty_entity::{departments, jwt_refresh_tokens, operation_logs, user_departments, users};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, DbErr, EntityTrait,
-    QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, DbErr, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -146,7 +146,9 @@ fn normalize_account(raw: &str) -> Result<String, UserError> {
     let account = raw.trim().to_owned();
     let length = account.chars().count();
     if !(2..=64).contains(&length) {
-        return Err(UserError::InvalidInput("账号长度需在 2-64 个字符之间".to_owned()));
+        return Err(UserError::InvalidInput(
+            "账号长度需在 2-64 个字符之间".to_owned(),
+        ));
     }
     Ok(account)
 }
@@ -154,7 +156,9 @@ fn normalize_account(raw: &str) -> Result<String, UserError> {
 fn normalize_display_name(raw: &str) -> Result<String, UserError> {
     let display_name = raw.trim().to_owned();
     if display_name.is_empty() || display_name.chars().count() > 80 {
-        return Err(UserError::InvalidInput("姓名不能为空且不超过 80 个字符".to_owned()));
+        return Err(UserError::InvalidInput(
+            "姓名不能为空且不超过 80 个字符".to_owned(),
+        ));
     }
     Ok(display_name)
 }
@@ -162,7 +166,9 @@ fn normalize_display_name(raw: &str) -> Result<String, UserError> {
 fn validate_password(raw: &str) -> Result<(), UserError> {
     let length = raw.chars().count();
     if !(8..=128).contains(&length) {
-        return Err(UserError::InvalidInput("密码长度需在 8-128 个字符之间".to_owned()));
+        return Err(UserError::InvalidInput(
+            "密码长度需在 8-128 个字符之间".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -477,7 +483,10 @@ pub async fn update_user(
             let departments = load_active_departments(db, department_ids).await?;
             diff.insert(
                 "departments".to_owned(),
-                json!(departments.iter().map(|d| d.name.clone()).collect::<Vec<_>>()),
+                json!(departments
+                    .iter()
+                    .map(|d| d.name.clone())
+                    .collect::<Vec<_>>()),
             );
             Some(departments)
         }
@@ -682,13 +691,9 @@ pub fn build_import_template() -> Result<Vec<u8>, UserError> {
         "5. 部门不匹配的行会标记失败并说明原因，不会自动创建新部门。",
     ];
     for (row, line) in note_lines.iter().enumerate() {
-        notes
-            .write(row as u32, 0, *line)
-            .map_err(excel_error)?;
+        notes.write(row as u32, 0, *line).map_err(excel_error)?;
     }
-    notes
-        .set_column_width(0, 80.0)
-        .map_err(excel_error)?;
+    notes.set_column_width(0, 80.0).map_err(excel_error)?;
 
     workbook
         .save_to_buffer()
@@ -708,11 +713,15 @@ pub fn parse_import_workbook(bytes: &[u8]) -> Result<Vec<(u64, ImportRow)>, User
     let mut workbook = open_workbook_auto_from_rs(cursor)
         .map_err(|error| UserError::Excel(format!("文件无法解析：{error}")))?;
     let range = match workbook.worksheet_range_at(0) {
-        Some(result) => result.map_err(|error| UserError::Excel(format!("工作表读取失败：{error}")))?,
+        Some(result) => {
+            result.map_err(|error| UserError::Excel(format!("工作表读取失败：{error}")))?
+        }
         None => return Err(UserError::Excel("Excel 中没有工作表".to_owned())),
     };
     let mut rows = range.rows();
-    let header = rows.next().ok_or(UserError::Excel("Excel 内容为空".to_owned()))?;
+    let header = rows
+        .next()
+        .ok_or(UserError::Excel("Excel 内容为空".to_owned()))?;
     let column_of = |keyword: &str| -> Option<usize> {
         header
             .iter()
@@ -742,9 +751,7 @@ pub fn parse_import_workbook(bytes: &[u8]) -> Result<Vec<(u64, ImportRow)>, User
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        if account.trim().is_empty()
-            && display_name.trim().is_empty()
-            && password.trim().is_empty()
+        if account.trim().is_empty() && display_name.trim().is_empty() && password.trim().is_empty()
         {
             continue;
         }

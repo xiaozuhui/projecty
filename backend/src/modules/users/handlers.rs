@@ -72,7 +72,9 @@ pub async fn create(
             account: request.account,
             password: request.password,
             display_name: request.display_name,
-            system_role: request.system_role.unwrap_or(crate::domain::permissions::SystemRole::User),
+            system_role: request
+                .system_role
+                .unwrap_or(crate::domain::permissions::SystemRole::User),
             department_ids: request.department_ids.unwrap_or_default(),
         },
     )
@@ -136,7 +138,8 @@ pub async fn import(
             break;
         }
     }
-    let bytes = file_bytes.ok_or_else(|| AppError::bad_request("需要上传名为 file 的 Excel 文件"))?;
+    let bytes =
+        file_bytes.ok_or_else(|| AppError::bad_request("需要上传名为 file 的 Excel 文件"))?;
     let rows = service::parse_import_workbook(&bytes).map_err(map_error)?;
     if rows.is_empty() {
         return Err(AppError::bad_request("Excel 中没有可导入的数据行"));
