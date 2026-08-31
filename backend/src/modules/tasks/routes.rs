@@ -15,6 +15,7 @@ pub fn routes() -> Router<AppState> {
             get(handlers::detail).patch(handlers::update),
         )
         .route("/tasks/{task_key}/transition", post(handlers::transition))
+        .route("/tasks/{task_key}/move", post(handlers::move_task))
         .route("/tasks/{task_key}/delete", post(handlers::delete))
         .route("/tasks/{task_key}/restore", post(handlers::restore))
         .route(

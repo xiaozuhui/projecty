@@ -9,8 +9,8 @@ use crate::{
         extractors::CurrentUser,
     },
     modules::tasks::service::{
-        self, CreateTaskRequest, DeleteTaskRequest, ListTasksQuery, TaskListResponse, TaskView,
-        TransitionTaskRequest, UpdateTaskRequest,
+        self, CreateTaskRequest, DeleteTaskRequest, ListTasksQuery, MoveTaskRequest,
+        TaskListResponse, TaskView, TransitionTaskRequest, UpdateTaskRequest,
     },
     state::AppState,
 };
@@ -98,6 +98,18 @@ pub async fn transition(
     Json(request): Json<TransitionTaskRequest>,
 ) -> Result<Json<ApiEnvelope<TaskView>>, AppError> {
     let response = service::transition(&state.db, &current_user, &task_key, request)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn move_task(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(task_key): Path<String>,
+    Json(request): Json<MoveTaskRequest>,
+) -> Result<Json<ApiEnvelope<TaskView>>, AppError> {
+    let response = service::move_task(&state.db, &current_user, &task_key, request)
         .await
         .map_err(map_error)?;
     Ok(success(response))

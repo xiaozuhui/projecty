@@ -12,6 +12,8 @@ pub struct Model {
     pub project_id: Uuid,
     pub parent_task_id: Option<Uuid>,
     pub status_id: Uuid,
+    /// 列内排序,同一状态列从 0 连续编号。
+    pub position: i64,
     pub milestone_id: Option<Uuid>,
     pub title: String,
     pub description: Option<String>,

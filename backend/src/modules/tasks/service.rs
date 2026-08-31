@@ -78,6 +78,13 @@ pub struct TransitionTaskRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct MoveTaskRequest {
+    pub status_id: Uuid,
+    /// 目标列内下标,从 0 开始,超出列长时落尾。
+    pub position: u64,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DeleteTaskRequest {
     pub reason: Option<String>,
 }
@@ -93,6 +100,7 @@ pub struct TaskView {
     pub description: Option<String>,
     pub priority: String,
     pub status_id: Uuid,
+    pub position: i64,
     pub assignee_id: Option<Uuid>,
     pub reporter_id: Uuid,
     pub due_at: Option<DateTime<Utc>>,
@@ -216,6 +224,8 @@ async fn create_task(
 
     let status = find_status_for_create(&txn, project.id, request.status_id).await?;
     let task_number = next_task_number(&txn, project.id).await?;
+    // 新任务追加到目标列末尾,保证列内 position 连续。
+    let position = next_position_in_column(&txn, project.id, status.id).await?;
     let now = Utc::now();
     let task = tasks::ActiveModel {
         id: Set(Uuid::now_v7()),
@@ -223,6 +233,7 @@ async fn create_task(
         project_id: Set(project.id),
         parent_task_id: Set(parent.map(|value| value.id)),
         status_id: Set(status.id),
+        position: Set(position),
         milestone_id: Set(None),
         title: Set(title),
         description: Set(request.description),
@@ -324,10 +335,15 @@ pub async fn transition(
         return Ok(task.into());
     }
     let txn = db.begin().await?;
+    // 换列后追加到新列末尾,旧列收口补齐空档。
+    let position = next_position_in_column(&txn, task.project_id, status.id).await?;
+    let old_status_id = task.status_id;
     let mut active: tasks::ActiveModel = task.clone().into_active_model();
     active.status_id = Set(status.id);
+    active.position = Set(position);
     active.updated_at = Set(Utc::now());
     let updated = active.update(&txn).await?;
+    compact_column(&txn, task.project_id, old_status_id).await?;
     write_task_log(
         &txn,
         current_user.user_id,
@@ -335,6 +351,71 @@ pub async fn transition(
         "status_transition",
         format!("变更任务 {} 状态", updated.task_key),
         json!({ "from_status_id": task.status_id, "to_status_id": status.id }),
+        Some(serde_json::to_value(&task)?),
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(updated.into())
+}
+
+/// 看板拖拽落点:换列与列内重排共用,目标列按给定下标插入并整体重编号。
+pub async fn move_task(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    task_key: &str,
+    request: MoveTaskRequest,
+) -> Result<TaskView, TaskError> {
+    let task = find_task(db, task_key, false).await?;
+    require_write_role(db, current_user, task.project_id).await?;
+    ensure_project_open_by_id(db, task.project_id).await?;
+    let status = project_statuses::Entity::find_by_id(request.status_id)
+        .filter(project_statuses::Column::ProjectId.eq(task.project_id))
+        .one(db)
+        .await?
+        .ok_or_else(|| TaskError::InvalidInput("目标状态不属于当前项目".to_owned()))?;
+    let txn = db.begin().await?;
+    // 项目级排他:防止并发移动交错读写同一列造成重复或空洞 position。
+    txn.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [task.project_id.to_string().into()],
+    ))
+    .await?;
+    let same_column = status.id == task.status_id;
+    let mut column = column_task_ids(&txn, task.project_id, status.id, None).await?;
+    let current_index = column.iter().position(|id| *id == task.id);
+    column.retain(|id| *id != task.id);
+    let insert_index = (request.position as usize).min(column.len());
+    if same_column && current_index == Some(insert_index) {
+        txn.rollback().await?;
+        return Ok(task.into());
+    }
+    column.insert(insert_index, task.id);
+    for (index, id) in column.iter().enumerate() {
+        let mut active = tasks::ActiveModel {
+            id: Set(*id),
+            ..Default::default()
+        };
+        active.position = Set(index as i64);
+        active.update(&txn).await?;
+    }
+    let old_status_id = task.status_id;
+    let mut active: tasks::ActiveModel = task.clone().into_active_model();
+    if !same_column {
+        active.status_id = Set(status.id);
+    }
+    active.updated_at = Set(Utc::now());
+    let updated = active.update(&txn).await?;
+    if !same_column {
+        compact_column(&txn, task.project_id, old_status_id).await?;
+    }
+    write_task_log(
+        &txn,
+        current_user.user_id,
+        &updated,
+        "move",
+        format!("移动任务 {} 到列下标 {insert_index}", updated.task_key),
+        json!({ "from_status_id": old_status_id, "to_status_id": status.id, "position": insert_index }),
         Some(serde_json::to_value(&task)?),
     )
     .await?;
@@ -605,6 +686,66 @@ async fn next_task_number<C: ConnectionTrait + Send + Sync>(
         .ok_or(TaskError::NotFound)
 }
 
+/// 目标列的下一个顺位:MAX(position)+1,空列返回 0。
+async fn next_position_in_column<C: ConnectionTrait + Send + Sync>(
+    conn: &C,
+    project_id: Uuid,
+    status_id: Uuid,
+) -> Result<i64, TaskError> {
+    let max = tasks::Entity::find()
+        .filter(tasks::Column::ProjectId.eq(project_id))
+        .filter(tasks::Column::StatusId.eq(status_id))
+        .filter(tasks::Column::DeletedAt.is_null())
+        .select_only()
+        .column_as(tasks::Column::Position.max(), "max_position")
+        .into_tuple::<Option<i64>>()
+        .one(conn)
+        .await?;
+    Ok(max.flatten().unwrap_or(-1) + 1)
+}
+
+/// 状态列的任务 id 顺序:position 优先,task_number 兜底排序。
+async fn column_task_ids<C: ConnectionTrait + Send + Sync>(
+    conn: &C,
+    project_id: Uuid,
+    status_id: Uuid,
+    exclude_task_id: Option<Uuid>,
+) -> Result<Vec<Uuid>, TaskError> {
+    let mut query = tasks::Entity::find()
+        .filter(tasks::Column::ProjectId.eq(project_id))
+        .filter(tasks::Column::StatusId.eq(status_id))
+        .filter(tasks::Column::DeletedAt.is_null())
+        .order_by_asc(tasks::Column::Position)
+        .order_by_asc(tasks::Column::TaskNumber);
+    if let Some(exclude_task_id) = exclude_task_id {
+        query = query.filter(tasks::Column::Id.ne(exclude_task_id));
+    }
+    Ok(query
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|task| task.id)
+        .collect())
+}
+
+/// 列内重编号为 0..n 连续值,用于移出任务后收口空档。
+async fn compact_column<C: ConnectionTrait + Send + Sync>(
+    conn: &C,
+    project_id: Uuid,
+    status_id: Uuid,
+) -> Result<(), TaskError> {
+    let ids = column_task_ids(conn, project_id, status_id, None).await?;
+    for (index, id) in ids.iter().enumerate() {
+        let mut active = tasks::ActiveModel {
+            id: Set(*id),
+            ..Default::default()
+        };
+        active.position = Set(index as i64);
+        active.update(conn).await?;
+    }
+    Ok(())
+}
+
 async fn write_task_log<C: ConnectionTrait + Send + Sync>(
     conn: &C,
     actor_user_id: Uuid,
@@ -673,6 +814,7 @@ impl From<tasks::Model> for TaskView {
             description: value.description,
             priority: value.priority,
             status_id: value.status_id,
+            position: value.position,
             assignee_id: value.assignee_id,
             reporter_id: value.reporter_id,
             due_at: value.due_at,

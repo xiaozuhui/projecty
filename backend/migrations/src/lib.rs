@@ -7,6 +7,7 @@ mod m20260830_000003_task_numbering;
 mod m20260830_000004_department_closure;
 mod m20260831_000005_user_last_login_at;
 mod m20260831_000006_task_attachments;
+mod m20260831_000007_task_position;
 
 pub struct Migrator;
 
@@ -20,6 +21,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260830_000004_department_closure::Migration),
             Box::new(m20260831_000005_user_last_login_at::Migration),
             Box::new(m20260831_000006_task_attachments::Migration),
+            Box::new(m20260831_000007_task_position::Migration),
         ]
     }
 }
