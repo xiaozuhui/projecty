@@ -28,6 +28,11 @@ fn map_error(error: service::TaskError) -> AppError {
             code: "forbidden",
             message: "没有当前项目的任务操作权限".to_owned(),
         },
+        service::TaskError::ForbiddenAction(message) => AppError {
+            status: axum::http::StatusCode::FORBIDDEN,
+            code: "forbidden_action",
+            message,
+        },
         service::TaskError::InvalidInput(message) => AppError::bad_request(message),
         service::TaskError::Conflict(message) => AppError {
             status: axum::http::StatusCode::CONFLICT,

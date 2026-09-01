@@ -31,6 +31,8 @@ pub enum TaskError {
     InvalidInput(String),
     #[error("当前操作不允许：{0}")]
     Conflict(String),
+    #[error("{0}")]
+    ForbiddenAction(String),
     #[error("数据库错误：{0}")]
     Database(#[from] sea_orm::DbErr),
     #[error("数据序列化错误：{0}")]
@@ -60,6 +62,7 @@ pub struct CreateTaskRequest {
     pub priority: Option<String>,
     pub status_id: Option<Uuid>,
     pub assignee_id: Option<Uuid>,
+    pub reviewer_id: Option<Uuid>,
     pub due_at: Option<DateTime<Utc>>,
     pub parent_task_id: Option<Uuid>,
 }
@@ -73,7 +76,12 @@ pub struct UpdateTaskRequest {
     #[serde(default, deserialize_with = "double_option")]
     pub assignee_id: Option<Option<Uuid>>,
     #[serde(default, deserialize_with = "double_option")]
+    pub reviewer_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub due_at: Option<Option<DateTime<Utc>>>,
+    /// 变更任务归属:null=脱离父任务转为主任务,Some=挂靠到指定根任务。
+    #[serde(default, deserialize_with = "double_option")]
+    pub parent_task_id: Option<Option<Uuid>>,
 }
 
 /// 把 JSON null 与字段缺失区分开:缺失走 serde default 得 None(不改),null 得 Some(None)(清空)。
@@ -116,6 +124,8 @@ pub struct TaskView {
     pub position: i64,
     pub assignee_id: Option<Uuid>,
     pub assignee_name: Option<String>,
+    pub reviewer_id: Option<Uuid>,
+    pub reviewer_name: Option<String>,
     pub reporter_id: Uuid,
     pub due_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -199,7 +209,7 @@ pub async fn list_cross_project_tasks(
     let has_more = models.len() > page_size as usize;
     models.truncate(page_size as usize);
     let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
-    hydrate_assignees(db, &mut items).await?;
+    hydrate_user_names(db, &mut items).await?;
     let items = hydrate_project_context(db, items).await?;
     Ok(CrossProjectTaskListResponse {
         items,
@@ -303,7 +313,7 @@ pub async fn list_project_tasks(
     let has_more = models.len() > page_size as usize;
     models.truncate(page_size as usize);
     let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
-    hydrate_assignees(db, &mut items).await?;
+    hydrate_user_names(db, &mut items).await?;
     Ok(TaskListResponse {
         items,
         page,
@@ -320,7 +330,7 @@ pub async fn detail(
     let task = find_task(db, task_key, false).await?;
     require_read_role(db, current_user, task.project_id).await?;
     let mut view = TaskView::from(task);
-    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -332,9 +342,9 @@ pub async fn create_project_task(
 ) -> Result<TaskView, TaskError> {
     let project = find_project(db, project_key).await?;
     ensure_project_open(&project)?;
-    require_write_role(db, current_user, project.id).await?;
+    let role = require_write_role(db, current_user, project.id).await?;
     request.parent_task_id = None;
-    create_task(db, current_user, project, request).await
+    create_task(db, current_user, project, role, request).await
 }
 
 pub async fn create_subtask(
@@ -344,7 +354,7 @@ pub async fn create_subtask(
     mut request: CreateTaskRequest,
 ) -> Result<TaskView, TaskError> {
     let parent = find_task(db, parent_task_key, false).await?;
-    require_write_role(db, current_user, parent.project_id).await?;
+    let role = require_write_role(db, current_user, parent.project_id).await?;
     request.parent_task_id = Some(parent.id);
     let project = projects::Entity::find_by_id(parent.project_id)
         .filter(projects::Column::DeletedAt.is_null())
@@ -352,19 +362,23 @@ pub async fn create_subtask(
         .await?
         .ok_or(TaskError::NotFound)?;
     ensure_project_open(&project)?;
-    create_task(db, current_user, project, request).await
+    create_task(db, current_user, project, role, request).await
 }
 
 async fn create_task(
     db: &DatabaseConnection,
     current_user: &CurrentUser,
     project: projects::Model,
+    role: EffectiveProjectRole,
     request: CreateTaskRequest,
 ) -> Result<TaskView, TaskError> {
     let title = required_title(request.title)?;
     let priority = normalize_priority(request.priority)?;
     if let Some(assignee_id) = request.assignee_id {
-        validate_assignee(db, project.id, assignee_id).await?;
+        validate_task_user(db, project.id, assignee_id, "负责人").await?;
+    }
+    if let Some(reviewer_id) = request.reviewer_id {
+        validate_task_user(db, project.id, reviewer_id, "评审人").await?;
     }
     let txn = db.begin().await?;
 
@@ -391,6 +405,12 @@ async fn create_task(
     };
 
     let status = find_status_for_create(&txn, project.id, request.status_id).await?;
+    // 新任务尚无评审人,直接建在完成列只有项目管理员及以上可以,防止 member 绕过评审流转。
+    if status.category == "done" && !role.can_manage_project() {
+        return Err(TaskError::ForbiddenAction(
+            "已完成状态的任务仅项目管理员可以创建".to_owned(),
+        ));
+    }
     let task_number = next_task_number(&txn, project.id).await?;
     // 新任务追加到目标列末尾,保证列内 position 连续。
     let position = next_position_in_column(&txn, project.id, status.id).await?;
@@ -408,6 +428,7 @@ async fn create_task(
         priority: Set(priority),
         reporter_id: Set(current_user.user_id),
         assignee_id: Set(request.assignee_id),
+        reviewer_id: Set(request.reviewer_id),
         due_at: Set(request.due_at),
         created_at: Set(now),
         updated_at: Set(now),
@@ -430,7 +451,7 @@ async fn create_task(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(task);
-    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -461,18 +482,54 @@ pub async fn update(
     }
     if let Some(assignee_id) = request.assignee_id {
         if let Some(assignee_id) = assignee_id {
-            validate_assignee(db, task.project_id, assignee_id).await?;
+            validate_task_user(db, task.project_id, assignee_id, "负责人").await?;
         }
         active.assignee_id = Set(assignee_id);
         diff.insert("assignee_id".to_owned(), json!(assignee_id));
+    }
+    if let Some(reviewer_id) = request.reviewer_id {
+        if let Some(reviewer_id) = reviewer_id {
+            validate_task_user(db, task.project_id, reviewer_id, "评审人").await?;
+        }
+        active.reviewer_id = Set(reviewer_id);
+        diff.insert("reviewer_id".to_owned(), json!(reviewer_id));
     }
     if let Some(due_at) = request.due_at {
         active.due_at = Set(due_at);
         diff.insert("due_at".to_owned(), json!(due_at));
     }
+    if let Some(parent_task_id) = request.parent_task_id {
+        let next_parent = match parent_task_id {
+            Some(parent_id) => {
+                if parent_id == task.id {
+                    return Err(TaskError::InvalidInput("任务不能挂靠到自己".to_owned()));
+                }
+                let parent = tasks::Entity::find_by_id(parent_id)
+                    .filter(tasks::Column::ProjectId.eq(task.project_id))
+                    .filter(tasks::Column::DeletedAt.is_null())
+                    .one(db)
+                    .await?
+                    .ok_or(TaskError::InvalidInput(
+                        "父任务不存在或不属于当前项目".to_owned(),
+                    ))?;
+                // 复用两层规则:目标父任务自身必须是根任务,保证 任务→子任务 两层结构。
+                task_rules::classify_new_task(NewTaskParent {
+                    parent_task_id: Some(parent.id),
+                    parent_already_has_parent: parent.parent_task_id.is_some(),
+                })
+                .map_err(|error| TaskError::Conflict(error.to_string()))?;
+                Some(parent.id)
+            }
+            None => None,
+        };
+        if next_parent != task.parent_task_id {
+            active.parent_task_id = Set(next_parent);
+            diff.insert("parent_task_id".to_owned(), json!(next_parent));
+        }
+    }
     if diff.is_empty() {
         let mut view = TaskView::from(task);
-        hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+        hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
         return Ok(view);
     }
     active.updated_at = Set(Utc::now());
@@ -490,7 +547,7 @@ pub async fn update(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(updated);
-    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -501,16 +558,17 @@ pub async fn transition(
     request: TransitionTaskRequest,
 ) -> Result<TaskView, TaskError> {
     let task = find_task(db, task_key, false).await?;
-    require_write_role(db, current_user, task.project_id).await?;
+    let role = require_write_role(db, current_user, task.project_id).await?;
     ensure_project_open_by_id(db, task.project_id).await?;
     let status = project_statuses::Entity::find_by_id(request.status_id)
         .filter(project_statuses::Column::ProjectId.eq(task.project_id))
         .one(db)
         .await?
         .ok_or_else(|| TaskError::InvalidInput("目标状态不属于当前项目".to_owned()))?;
+    ensure_transition_allowed(&task, &status, current_user, role)?;
     if status.id == task.status_id {
         let mut view = TaskView::from(task);
-        hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+        hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
         return Ok(view);
     }
     let txn = db.begin().await?;
@@ -535,7 +593,7 @@ pub async fn transition(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(updated);
-    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -547,13 +605,17 @@ pub async fn move_task(
     request: MoveTaskRequest,
 ) -> Result<TaskView, TaskError> {
     let task = find_task(db, task_key, false).await?;
-    require_write_role(db, current_user, task.project_id).await?;
+    let role = require_write_role(db, current_user, task.project_id).await?;
     ensure_project_open_by_id(db, task.project_id).await?;
     let status = project_statuses::Entity::find_by_id(request.status_id)
         .filter(project_statuses::Column::ProjectId.eq(task.project_id))
         .one(db)
         .await?
         .ok_or_else(|| TaskError::InvalidInput("目标状态不属于当前项目".to_owned()))?;
+    // 跨列才算状态流转,同列仅重排维持既有写权限语义。
+    if status.id != task.status_id {
+        ensure_transition_allowed(&task, &status, current_user, role)?;
+    }
     let txn = db.begin().await?;
     // 项目级排他:防止并发移动交错读写同一列造成重复或空洞 position。
     txn.execute(Statement::from_sql_and_values(
@@ -570,7 +632,7 @@ pub async fn move_task(
     if same_column && current_index == Some(insert_index) {
         txn.rollback().await?;
         let mut view = TaskView::from(task);
-        hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+        hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
         return Ok(view);
     }
     column.insert(insert_index, task.id);
@@ -604,7 +666,7 @@ pub async fn move_task(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(updated);
-    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -674,7 +736,7 @@ pub async fn restore(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(restored);
-    hydrate_assignees(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -694,7 +756,7 @@ pub async fn subtasks(
         .into_iter()
         .map(TaskView::from)
         .collect();
-    hydrate_assignees(db, &mut items).await?;
+    hydrate_user_names(db, &mut items).await?;
     Ok(items)
 }
 
@@ -768,9 +830,10 @@ async fn require_write_role(
     db: &DatabaseConnection,
     current_user: &CurrentUser,
     project_id: Uuid,
-) -> Result<(), TaskError> {
+) -> Result<EffectiveProjectRole, TaskError> {
     let role = effective_role(db, current_user, project_id).await?;
-    authz::require_task_write(role).map_err(|_| TaskError::Forbidden)
+    authz::require_task_write(role).map_err(|_| TaskError::Forbidden)?;
+    Ok(role)
 }
 
 async fn effective_role(
@@ -935,12 +998,13 @@ async fn compact_column<C: ConnectionTrait + Send + Sync>(
     Ok(())
 }
 
-/// 批量回填负责人显示名:不去重 assignee 集合后单查 users,避免逐任务 N+1。
-async fn hydrate_assignees(
+/// 批量回填负责人/评审人显示名:合并去重 id 集合后单查 users,避免逐任务 N+1。
+async fn hydrate_user_names(
     db: &DatabaseConnection,
     views: &mut [TaskView],
 ) -> Result<(), TaskError> {
-    let ids: HashSet<Uuid> = views.iter().filter_map(|view| view.assignee_id).collect();
+    let mut ids: HashSet<Uuid> = views.iter().filter_map(|view| view.assignee_id).collect();
+    ids.extend(views.iter().filter_map(|view| view.reviewer_id));
     if ids.is_empty() {
         return Ok(());
     }
@@ -953,22 +1017,24 @@ async fn hydrate_assignees(
         .collect();
     for view in views {
         view.assignee_name = view.assignee_id.and_then(|id| names.get(&id).cloned());
+        view.reviewer_name = view.reviewer_id.and_then(|id| names.get(&id).cloned());
     }
     Ok(())
 }
 
-/// 负责人合法性:存在、未停用、且按其真实系统角色可读该项目。
-async fn validate_assignee(
+/// 负责人/评审人合法性:存在、未停用、且按其真实系统角色可读该项目。
+async fn validate_task_user(
     db: &DatabaseConnection,
     project_id: Uuid,
-    assignee_id: Uuid,
+    user_id: Uuid,
+    field: &str,
 ) -> Result<(), TaskError> {
-    let user = users::Entity::find_by_id(assignee_id)
+    let user = users::Entity::find_by_id(user_id)
         .one(db)
         .await?
-        .ok_or_else(|| TaskError::InvalidInput("负责人不存在".to_owned()))?;
+        .ok_or_else(|| TaskError::InvalidInput(format!("{field}不存在")))?;
     if !user.is_active {
-        return Err(TaskError::InvalidInput("负责人已被停用".to_owned()));
+        return Err(TaskError::InvalidInput(format!("{field}已被停用")));
     }
     let as_current = CurrentUser {
         user_id: user.id,
@@ -979,11 +1045,37 @@ async fn validate_assignee(
         },
     };
     if !user_can_read_project(db, &as_current, project_id).await? {
-        return Err(TaskError::InvalidInput(
-            "负责人没有当前项目的访问权限".to_owned(),
-        ));
+        return Err(TaskError::InvalidInput(format!(
+            "{field}没有当前项目的访问权限"
+        )));
     }
     Ok(())
+}
+
+/// 状态流转权限:项目管理员/超管豁免;评审人任意流转(含改为已完成与打回);负责人仅限非完成列;其他成员拒绝。
+fn ensure_transition_allowed(
+    task: &tasks::Model,
+    target_status: &project_statuses::Model,
+    current_user: &CurrentUser,
+    role: EffectiveProjectRole,
+) -> Result<(), TaskError> {
+    if role.can_manage_project() {
+        return Ok(());
+    }
+    if task.reviewer_id == Some(current_user.user_id) {
+        return Ok(());
+    }
+    if target_status.category == "done" {
+        return Err(TaskError::ForbiddenAction(
+            "只有评审人可以将任务改为已完成".to_owned(),
+        ));
+    }
+    if task.assignee_id == Some(current_user.user_id) {
+        return Ok(());
+    }
+    Err(TaskError::ForbiddenAction(
+        "只有负责人或评审人可以变更任务状态".to_owned(),
+    ))
 }
 
 async fn write_task_log<C: ConnectionTrait + Send + Sync>(
@@ -1057,6 +1149,8 @@ impl From<tasks::Model> for TaskView {
             position: value.position,
             assignee_id: value.assignee_id,
             assignee_name: None,
+            reviewer_id: value.reviewer_id,
+            reviewer_name: None,
             reporter_id: value.reporter_id,
             due_at: value.due_at,
             created_at: value.created_at,
