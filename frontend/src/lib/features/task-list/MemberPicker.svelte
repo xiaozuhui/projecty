@@ -28,7 +28,7 @@
   >
     <option value="">未分配</option>
     {#each members as member (member.user_id)}
-      <option value={member.user_id}>{member.display_name}</option>
+      <option value={member.user_id}>{member.display_name}{member.source === 'department' && member.department_name ? ` · ${member.department_name}` : ''}</option>
     {/each}
   </select>
 </div>

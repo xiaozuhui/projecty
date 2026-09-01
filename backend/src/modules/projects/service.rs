@@ -108,6 +108,11 @@ pub struct ProjectMemberView {
     pub role: String,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// 成员来源:direct=显式添加,department=部门授权(沿层级向下展开)。
+    pub source: String,
+    /// 部门来源成员的所在部门,直接成员为 null。
+    pub department_id: Option<Uuid>,
+    pub department_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -141,6 +146,9 @@ struct MemberRow {
     role: String,
     created_at: DateTime<Utc>,
     revoked_at: Option<DateTime<Utc>>,
+    source: String,
+    department_id: Option<Uuid>,
+    department_name: Option<String>,
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -437,9 +445,11 @@ pub async fn list_members(
 ) -> Result<ProjectMembersResponse, ProjectError> {
     let project = find_project(db, project_key).await?;
     require_visible(db, current_user, project.id).await?;
+    // 显式成员 ∪ 部门授权展开的成员(沿 department_closure 向下)。同时是显式成员的人按显式记录展示;
+    // 已被撤销显式成员但部门授权仍生效的人,以部门来源继续列出,与鉴权口径一致。
     let rows = MemberRow::find_by_statement(Statement::from_sql_and_values(
         DatabaseBackend::Postgres,
-        "SELECT pm.user_id, u.account, u.display_name, pm.role, pm.created_at, pm.revoked_at FROM project_members pm JOIN users u ON u.id = pm.user_id WHERE pm.project_id = $1 ORDER BY pm.revoked_at NULLS FIRST, pm.created_at ASC, pm.user_id ASC",
+        "WITH direct AS (SELECT pm.user_id, u.account, u.display_name, pm.role, pm.created_at, pm.revoked_at FROM project_members pm JOIN users u ON u.id = pm.user_id WHERE pm.project_id = $1), dept AS (SELECT DISTINCT ON (ud.user_id) ud.user_id, u.account, u.display_name, pdg.role, pdg.created_at, ud.department_id, dep.name AS department_name FROM project_department_grants pdg JOIN department_closure dc ON dc.ancestor_id = pdg.department_id JOIN user_departments ud ON ud.department_id = dc.descendant_id JOIN users u ON u.id = ud.user_id JOIN departments dep ON dep.id = ud.department_id WHERE pdg.project_id = $1 AND pdg.revoked_at IS NULL AND ud.revoked_at IS NULL AND u.deleted_at IS NULL ORDER BY ud.user_id, CASE pdg.role WHEN 'member' THEN 2 WHEN 'viewer' THEN 1 ELSE 0 END DESC, dep.name ASC) SELECT user_id, account, display_name, role, created_at, revoked_at, 'direct'::text AS source, NULL::uuid AS department_id, NULL::text AS department_name FROM direct UNION ALL SELECT user_id, account, display_name, role, created_at, NULL::timestamptz AS revoked_at, 'department'::text AS source, department_id, department_name FROM dept WHERE user_id NOT IN (SELECT user_id FROM direct WHERE revoked_at IS NULL) ORDER BY revoked_at NULLS FIRST, created_at ASC, user_id ASC",
         [project.id.into()],
     ))
     .all(db)
@@ -454,6 +464,9 @@ pub async fn list_members(
                 role: row.role,
                 created_at: row.created_at,
                 revoked_at: row.revoked_at,
+                source: row.source,
+                department_id: row.department_id,
+                department_name: row.department_name,
             })
             .collect(),
     })
