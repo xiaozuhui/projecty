@@ -48,18 +48,36 @@ deploy/docker/
 
 不要在 API 镜像构建前端源码，也不要把业务领域拆成独立 Rust crate；后端业务边界按 `backend/src/{domain,application,infrastructure,modules}` 组织。
 
-复制 `.env.example` 为 `.env`，替换数据库账号、密码、JWT 密钥和浏览器可访问的 `PUBLIC_API_BASE_URL` 后，由部署环境执行：
+复制 `.env.example` 为 `.env`，替换数据库账号、密码、JWT 密钥与宿主机端口（`PROJECTY_BACKEND_PORT` / `PROJECTY_FRONTEND_PORT`）后，由部署环境执行：
 
 ```bash
 docker compose -f deploy/docker/compose.yml up -d --build
 ```
 
-默认访问地址：
+默认访问地址（端口取自 `.env`，以下为默认值）：
 
-- 前端：`http://127.0.0.1:3000`
-- 后端：`http://127.0.0.1:8080`
-- 健康检查：`http://127.0.0.1:8080/healthz`
+- 前端：`http://127.0.0.1:28080`（浏览器只需访问前端这一个源）
+- 后端：`http://127.0.0.1:28081`
+- 健康检查：`http://127.0.0.1:28081/healthz`
 
-本项目不内置 Nginx 或其他反向代理；如果生产环境需要统一域名、HTTPS 或路径转发，请在现有基础设施中配置网关。
+浏览器侧 API 走同源相对路径 `/api/v1`，由前端容器内 `frontend/src/hooks.server.ts` 反向代理转发到 Docker 网络内的后端容器（`INTERNAL_API_ORIGIN`，默认 `http://backend:8080`，容器名即 docker 网络内的地址）。因此后端宿主机端口即使变化，浏览器也无需感知；生产环境需要统一域名、HTTPS 时只需把网关指到前端端口。
+
+### 初始化超级管理员
+
+部署启动后（backend 容器处于运行状态），在后端容器内执行内置的运维子命令创建第一个超级管理员：
+
+```bash
+docker compose -f deploy/docker/compose.yml exec backend \
+  projecty-api admin create \
+  --account admin \
+  --password '替换为强密码' \
+  --display-name '超级管理员'
+```
+
+- 容器内已注入 `DATABASE_URL`，不需要再传 `--database-url`；本地裸跑二进制时才需要通过该参数或环境变量指定数据库连接串。
+- 约束：账号 2-64 个字符，密码 8-128 个字符；账号已存在时命令直接报错退出，不会覆盖已有账号或密码。
+- 命令执行前会自动应用数据库迁移，全新数据库也可以先建管理员再启动服务。
+- 密码会留在 shell 历史里，初始化完建议清理或尽快在前端「个人设置」修改。
+- 其余普通用户由超级管理员在前端「用户」页面单个创建或批量导入，不需要命令行。
 
 本项目仅提供 Docker 构建配置静态骨架，本次未执行实际 Docker build。

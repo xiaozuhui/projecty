@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    networks:
+      - projecty-net
     volumes:
       - projecty-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -18,7 +20,9 @@ services:
   backend:
     image: projecty-backend:latest
     ports:
-      - "${PROJECTY_BACKEND_PORT:-8080}:8080"
+      - "${PROJECTY_BACKEND_PORT:-28081}:8080"
+    networks:
+      - projecty-net
     volumes:
       - projecty-uploads:/var/lib/projecty/uploads
     environment:
@@ -36,16 +40,25 @@ services:
 
   frontend:
     image: projecty-frontend:latest
+    networks:
+      - projecty-net
     ports:
-      - "${PROJECTY_FRONTEND_PORT:-3000}:3000"
+      - "${PROJECTY_FRONTEND_PORT:-28080}:3000"
     environment:
       HOST: 0.0.0.0
       PORT: 3000
       NODE_ENV: production
-      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://127.0.0.1:8080/api/v1}
+      # 浏览器走同源相对路径,由前端容器代理到 docker 网络内的后端
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-/api/v1}
+      INTERNAL_API_ORIGIN: ${INTERNAL_API_ORIGIN:-http://backend:8080}
     depends_on:
       - backend
 
 volumes:
   projecty-postgres:
   projecty-uploads:
+
+networks:
+  projecty-net:
+    name: projecty-net
+    driver: bridge
