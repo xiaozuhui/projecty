@@ -3,29 +3,32 @@
 
   let { children } = $props();
 
-  const tabs = [
-    { label: '概览', href: './' },
-    { label: '看板', href: './board' },
-    { label: '列表', href: './list' },
-    { label: '时间线', href: './timeline' },
-    { label: '日历', href: './calendar' },
-    { label: '子任务', href: './subtasks' },
-    { label: '里程碑', href: './milestones' },
-    { label: '成员', href: './members' },
-    { label: '日志', href: './logs' },
-    { label: '设置', href: './settings' },
-  ];
+  // 链接必须用绝对路径:相对 href 会按当前 URL 解析,
+  // /projects/KEY + ./board 会被解析成 /projects/board(KEY 段被当作文件名丢掉)。
+  const projectKey = $derived(decodeURIComponent(page.params.projectKey ?? ''));
+  const projectHref = $derived(`/projects/${encodeURIComponent(projectKey)}`);
+  const tabs = $derived([
+    { label: '概览', href: projectHref },
+    { label: '看板', href: `${projectHref}/board` },
+    { label: '列表', href: `${projectHref}/list` },
+    { label: '时间线', href: `${projectHref}/timeline` },
+    { label: '日历', href: `${projectHref}/calendar` },
+    { label: '子任务', href: `${projectHref}/subtasks` },
+    { label: '里程碑', href: `${projectHref}/milestones` },
+    { label: '成员', href: `${projectHref}/members` },
+    { label: '日志', href: `${projectHref}/logs` },
+    { label: '设置', href: `${projectHref}/settings` },
+  ]);
 
   const pathname = $derived(page.url.pathname.replace(/\/+$/, ''));
-  const isActive = (href: string) =>
-    href === './' ? /\/projects\/[^/]+$/.test(pathname) : pathname.endsWith(href.slice(1));
-  const projectKey = $derived(decodeURIComponent(page.url.pathname.split('/')[2] ?? ''));</script>
+  const isActive = (href: string) => pathname === href.replace(/\/+$/, '');
+</script>
 
 <div class="project-layout">
   <nav class="breadcrumb" aria-label="面包屑">
     <a href="/projects">项目</a>
     <span class="crumb-sep">/</span>
-    <a href={`./`}>{projectKey}</a>
+    <a href={projectHref}>{projectKey}</a>
   </nav>
   <nav class="project-tabs" aria-label="项目导航">
     {#each tabs as tab}
