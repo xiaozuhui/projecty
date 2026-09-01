@@ -14,6 +14,12 @@
     onleave: (statusId: string) => void;
     ondrop: (statusId: string, index: number) => void;
     onquickadd: (statusId: string, title: string) => Promise<boolean>;
+    /** 由父任务 id 查父任务 Key,子任务卡片据此展示归属。 */
+    parentKeyOf: (task: TaskView) => string | null;
+    /** 卡片是否可拖:按当前用户是否负责人/评审人/豁免角色判断。 */
+    candrag: (task: TaskView) => boolean;
+    /** 该列是否允许快捷新建:完成列仅项目管理员。 */
+    canquickadd: boolean;
   }
 
   let {
@@ -26,7 +32,10 @@
     onover,
     onleave,
     ondrop,
-    onquickadd
+    onquickadd,
+    parentKeyOf,
+    candrag,
+    canquickadd
   }: Props = $props();
 
   let body = $state<HTMLDivElement | null>(null);
@@ -87,7 +96,9 @@
       {#if active && index === indicatorIndex}<div class="drop-indicator" aria-hidden="true"></div>{/if}
       <BoardCard
         {task}
+        parentKey={parentKeyOf(task)}
         dragging={draggingId === task.id}
+        draggable={candrag(task)}
         ondragstart={ondragcardstart}
         ondragend={ondragcardend}
       />
@@ -96,19 +107,21 @@
     {#if !tasks.length && !active}<div class="empty-column">拖拽卡片到这里</div>{/if}
   </div>
   <div class="quick-add">
-    {#if adding}
-      <form onsubmit={submit}>
-        <input
-          bind:value={newTitle}
-          placeholder="任务标题,回车创建"
-          aria-label={`在 ${status.name} 添加任务`}
-          disabled={submitting}
-          onkeydown={(event) => { if (event.key === 'Escape') { adding = false; newTitle = ''; } }}
-          onblur={() => { if (!newTitle.trim()) adding = false; }}
-        />
-      </form>
-    {:else}
-      <button type="button" class="quick-add-toggle" onclick={() => (adding = true)}>+ 添加任务</button>
+    {#if canquickadd}
+      {#if adding}
+        <form onsubmit={submit}>
+          <input
+            bind:value={newTitle}
+            placeholder="任务标题,回车创建"
+            aria-label={`在 ${status.name} 添加任务`}
+            disabled={submitting}
+            onkeydown={(event) => { if (event.key === 'Escape') { adding = false; newTitle = ''; } }}
+            onblur={() => { if (!newTitle.trim()) adding = false; }}
+          />
+        </form>
+      {:else}
+        <button type="button" class="quick-add-toggle" onclick={() => (adding = true)}>+ 添加任务</button>
+      {/if}
     {/if}
   </div>
 </article>

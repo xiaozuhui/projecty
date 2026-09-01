@@ -3,9 +3,11 @@
   import PageHeader from '$lib/components/PageHeader.svelte';
   import { ApiClientError } from '$lib/api/client';
   import { listProjectMembers, listStatuses } from '$lib/api/projects';
-  import { createTask, listTasks } from '$lib/api/tasks';
+  import { createTask, deleteTask, listTasks } from '$lib/api/tasks';
   import type { ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
+  import { meStore } from '$lib/features/auth/me.svelte';
+  import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
 
   const projectKey = $derived(String(page.params.projectKey ?? ''));
@@ -23,13 +25,28 @@
   let description = $state('');
   let priority = $state('medium');
   let assigneeId = $state<string | null>(null);
+  let reviewerId = $state<string | null>(null);
   let dueAt = $state('');
   let createStatusId = $state('');
   let statusFilter = $state('');
   let parentFilter = $state('');
   let errorMessage = $state('');
+  let deletingId = $state<string | null>(null);
 
   const statusName = (id: string) => statuses.find((status) => status.id === id)?.name || id.slice(0, 8);
+  // 与后端一致:超管/项目管理员豁免流转限制,可把任务直接建在完成列,普通成员下拉不出现该选项。
+  const exempt = $derived.by(() => {
+    const me = meStore.current;
+    const myRole = members.find((member) => member.user_id === me?.id)?.role;
+    return meStore.isAdmin || myRole === 'manager';
+  });
+  const creatableStatuses = $derived(
+    exempt ? statuses : statuses.filter((status) => status.category !== 'done')
+  );
+  // 父任务 Key 反查:优先当前页,再从全量根任务补齐,子任务行据此展示归属。
+  const allTasks = $derived([...tasks, ...rootTasks]);
+  const parentKeyOf = (task: TaskView) =>
+    task.parent_task_id ? (allTasks.find((item) => item.id === task.parent_task_id)?.task_key ?? null) : null;
   const priorityName: Record<string, string> = {
     urgent: '紧急',
     high: '高',
@@ -90,11 +107,13 @@
         priority,
         status_id: createStatusId || undefined,
         assignee_id: assigneeId,
-        due_at: dueAt ? new Date(`${dueAt}T23:59:59`).toISOString() : undefined
+        reviewer_id: reviewerId,
+        due_at: dueAt ? new Date(dueAt).toISOString() : undefined
       });
       title = '';
       description = '';
       assigneeId = null;
+      reviewerId = null;
       dueAt = '';
       showCreate = false;
       await load(1);
@@ -102,6 +121,29 @@
       errorMessage = error instanceof ApiClientError ? error.message : '任务创建失败';
     } finally {
       submitting = false;
+    }
+  }
+
+  async function removeTask(task: TaskView) {
+    if (
+      !(await confirmDialog({
+        title: '逻辑删除任务',
+        message: `确定删除 ${task.task_key}「${task.title}」吗？删除后可在操作日志追溯。`,
+        confirmLabel: '删除',
+        danger: true
+      }))
+    ) {
+      return;
+    }
+    deletingId = task.id;
+    errorMessage = '';
+    try {
+      await deleteTask(task.task_key, '用户从任务列表页删除任务');
+      await load(currentPage);
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '任务删除失败';
+    } finally {
+      deletingId = null;
     }
   }
 
@@ -161,12 +203,13 @@
         <option value="none">无</option>
       </select>
       <select bind:value={createStatusId} aria-label="初始状态">
-        {#each statuses as status}
+        {#each creatableStatuses as status}
           <option value={status.id}>{status.name}</option>
         {/each}
       </select>
       <MemberPicker value={assigneeId} {members} onchange={(value) => (assigneeId = value)} ariaLabel="负责人" />
-      <input class="field-due" type="date" bind:value={dueAt} aria-label="截止日期" />
+      <MemberPicker value={reviewerId} {members} onchange={(value) => (reviewerId = value)} ariaLabel="评审人" />
+      <input class="field-due" type="datetime-local" bind:value={dueAt} aria-label="截止时间" />
       <input class="field-desc" bind:value={description} placeholder="补充描述（可选）" aria-label="任务描述" />
       <button class="primary-button" type="submit" disabled={submitting}>
         {submitting ? '保存中…' : '创建'}
@@ -196,6 +239,7 @@
             <th>优先级</th>
             <th>负责人</th>
             <th>更新时间</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -203,7 +247,9 @@
             <tr>
               <td>
                 <a class="task-key" href={`/tasks/${task.task_key}`}>{task.task_key}</a>
-                {#if task.parent_task_id}<span class="subtask-mark">子任务</span>{/if}
+                {#if task.parent_task_id}
+                  <span class="subtask-mark">↳ 父 {parentKeyOf(task) ?? task.parent_task_id.slice(0, 8)}</span>
+                {/if}
               </td>
               <td><a class="task-title" href={`/tasks/${task.task_key}`}>{task.title}</a></td>
               <td><span class="status-pill">{statusName(task.status_id)}</span></td>
@@ -216,6 +262,16 @@
                   hour: '2-digit',
                   minute: '2-digit'
                 })}
+              </td>
+              <td>
+                <button
+                  class="text-button danger"
+                  type="button"
+                  disabled={deletingId === task.id}
+                  onclick={() => removeTask(task)}
+                >
+                  {deletingId === task.id ? '删除中…' : '删除'}
+                </button>
               </td>
             </tr>
           {/each}
@@ -310,7 +366,7 @@
 
   .create-task {
     display: grid;
-    grid-template-columns: minmax(180px, 1.6fr) 110px 140px minmax(150px, 1fr) 140px minmax(180px, 1.4fr) auto;
+    grid-template-columns: minmax(180px, 1.6fr) 110px 140px minmax(150px, 1fr) minmax(150px, 1fr) 140px minmax(180px, 1.4fr) auto;
     gap: 8px;
     margin-bottom: 14px;
     padding: 12px;
@@ -383,6 +439,21 @@
   .muted {
     color: var(--color-text-muted);
     font-size: 13px;
+  }
+
+  .text-button {
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--color-danger);
+    font-size: 13px;
+    font-weight:500;
+    cursor: pointer;
+  }
+
+  .text-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
   }
 
   .priority {

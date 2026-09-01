@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { ApiClientError } from '$lib/api/client';
-  import { listStatuses } from '$lib/api/projects';
+  import { listProjectMembers, listStatuses } from '$lib/api/projects';
   import { createTask, listTasks, moveTask } from '$lib/api/tasks';
-  import type { ProjectStatus, TaskView } from '$lib/api/types';
+  import type { ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
+  import { meStore } from '$lib/features/auth/me.svelte';
   import BoardColumn from './BoardColumn.svelte';
 
   interface Props {
@@ -14,25 +14,39 @@
 
   let statuses = $state<ProjectStatus[]>([]);
   let tasks = $state<TaskView[]>([]);
+  let members = $state<ProjectMember[]>([]);
   let loading = $state(true);
   let errorMessage = $state('');
   let draggingId = $state<string | null>(null);
   let dropTarget = $state<{ statusId: string; index: number } | null>(null);
 
+  // 流转豁免与后端一致:超管/项目管理员不受负责人、评审人限制。
+  const exempt = $derived.by(() => {
+    const me = meStore.current;
+    const myRole = members.find((member) => member.user_id === me?.id)?.role;
+    return meStore.isAdmin || myRole === 'manager';
+  });
+
   const ordered = (statusId: string) =>
     [...tasks.filter((task) => task.status_id === statusId)]
       .sort((left, right) => left.position - right.position || left.task_number - right.task_number);
+
+  // 子任务卡片需要显示父任务 Key,从当前列视图里反查。
+  const parentKeyOf = (task: TaskView) =>
+    task.parent_task_id ? (tasks.find((item) => item.id === task.parent_task_id)?.task_key ?? null) : null;
 
   export async function reload() {
     loading = true;
     errorMessage = '';
     try {
-      const [statusResponse, taskResponse] = await Promise.all([
+      const [statusResponse, taskResponse, memberResponse] = await Promise.all([
         listStatuses(projectKey),
-        listTasks(projectKey, 1, 100)
+        listTasks(projectKey, 1, 100),
+        listProjectMembers(projectKey)
       ]);
       statuses = statusResponse.data;
       tasks = taskResponse.data.items;
+      members = memberResponse.data.items;
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '看板加载失败';
     } finally {
@@ -90,6 +104,13 @@
     }
   }
 
+  // 拖拽是状态流转入口之一:非负责人非评审人的普通成员禁拖,后端校验兜底。
+  const canDrag = (task: TaskView) =>
+    exempt || task.reviewer_id === meStore.current?.id || task.assignee_id === meStore.current?.id;
+
+  // 完成列新建任务需要评审人身份,而新任务还没有评审人,仅对豁免角色开放。
+  const canQuickAdd = (status: ProjectStatus) => exempt || status.category !== 'done';
+
   async function quickAdd(statusId: string, title: string) {
     try {
       const created = (await createTask(projectKey, { title, status_id: statusId })).data;
@@ -102,7 +123,7 @@
     }
   }
 
-  onMount(() => { void reload(); });
+  // 初次加载由宿主页面的 bindReload 触发,这里不再挂 onMount 以免重复请求。
 </script>
 
 {#if loading}
@@ -117,12 +138,15 @@
           tasks={ordered(status.id)}
           {dropTarget}
           {draggingId}
+          candrag={canDrag}
+          canquickadd={canQuickAdd(status)}
           ondragcardstart={dragCardStart}
           ondragcardend={dragCardEnd}
           onover={(statusId, index) => (dropTarget = { statusId, index })}
           onleave={(statusId) => { if (dropTarget?.statusId === statusId) dropTarget = null; }}
           ondrop={drop}
           onquickadd={quickAdd}
+          {parentKeyOf}
         />
       {/each}
     </section>

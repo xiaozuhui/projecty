@@ -6,9 +6,10 @@
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { listStatuses, listProjectMembers } from '$lib/api/projects';
   import { deleteAttachment, listTaskAttachments, uploadTaskAttachment, attachmentUrl } from '$lib/api/attachments';
-  import { createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, transitionTask, updateTask } from '$lib/api/tasks';
+  import { createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, listTasks, transitionTask, updateTask } from '$lib/api/tasks';
   import type { Attachment, Comment, ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
+  import { meStore } from '$lib/features/auth/me.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
 
   const taskKey = $derived(String(page.params.taskKey ?? ''));
@@ -21,17 +22,51 @@
   let subtasks = $state<TaskView[]>([]);
   let statuses = $state<ProjectStatus[]>([]);
   let members = $state<ProjectMember[]>([]);
+  let rootTasks = $state<TaskView[]>([]);
   let selectedStatus = $state('');
+  let selectedDueAt = $state('');
+  let attachParentId = $state('');
   let subtaskTitle = $state('');
   let loading = $state(true);
   let submitting = $state(false);
   let uploading = $state(false);
   let deleting = $state(false);
+  let reparenting = $state(false);
   let errorMessage = $state('');
   let taskFileInput = $state<HTMLInputElement | null>(null);
   let commentFileInput = $state<HTMLInputElement | null>(null);
   const statusName = (id: string) => statuses.find((status) => status.id === id)?.name || id.slice(0, 8);
   const priorityName: Record<string, string> = { urgent: '紧急', high: '高', medium: '中', low: '低', none: '无' };
+  // datetime-local 的值是本地时区无时区后缀,与 ISO 互转都经 Date 对象走本机时区。
+  const isoToLocalInput = (iso: string) => {
+    const date = new Date(iso);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+  // 父任务信息:面包屑、归属卡、子任务进度都要用。
+  const parentTask = $derived.by(() => {
+    const parentId = task?.parent_task_id;
+    return parentId ? (rootTasks.find((item) => item.id === parentId) ?? null) : null;
+  });
+  const doneSubtasks = $derived(
+    subtasks.filter((item) => statuses.find((status) => status.id === item.status_id)?.category === 'done').length
+  );
+  // 状态流转权限镜像后端规则:管理员豁免;评审人任意;负责人仅限非完成列;其他成员只读。
+  const statusControl = $derived.by(() => {
+    const me = meStore.current;
+    const myRole = members.find((member) => member.user_id === me?.id)?.role;
+    const exempt = meStore.isAdmin || myRole === 'manager';
+    const isReviewer = task?.reviewer_id != null && task.reviewer_id === me?.id;
+    const isAssignee = task?.assignee_id != null && task.assignee_id === me?.id;
+    const canChange = Boolean(task) && (exempt || isReviewer || isAssignee);
+    const canSetDone = exempt || isReviewer;
+    const allowed = canSetDone ? statuses : statuses.filter((status) => status.category !== 'done');
+    // 当前状态不在可选集(负责人视角下的已完成)时保留回显项,避免 select 显示空白。
+    const current = statuses.find((status) => status.id === task?.status_id) ?? null;
+    const options =
+      current && !allowed.some((status) => status.id === current.id) ? [...allowed, current] : allowed;
+    return { canChange, canSetDone, options: canChange || !current ? options : [current] };
+  });
 
   async function load() {
     loading = true;
@@ -39,19 +74,23 @@
     try {
       const taskResponse = await getTask(taskKey);
       task = taskResponse.data;
-      const [subtaskResponse, statusResponse, commentResponse, attachmentResponse, memberResponse] = await Promise.all([
+      const [subtaskResponse, statusResponse, commentResponse, attachmentResponse, memberResponse, projectTaskResponse] = await Promise.all([
         getSubtasks(taskKey),
         listStatuses(projectKey),
         listComments(taskKey),
         listTaskAttachments(taskKey),
-        listProjectMembers(projectKey)
+        listProjectMembers(projectKey),
+        listTasks(projectKey, 1, 100)
       ]);
       subtasks = subtaskResponse.data;
       statuses = statusResponse.data;
       comments = commentResponse.data;
       attachments = attachmentResponse.data;
       members = memberResponse.data.items;
+      rootTasks = projectTaskResponse.data.items.filter((item) => !item.parent_task_id);
       selectedStatus = task.status_id;
+      selectedDueAt = taskResponse.data.due_at ? isoToLocalInput(taskResponse.data.due_at) : '';
+      attachParentId = '';
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务加载失败';
     } finally {
@@ -77,7 +116,10 @@
     if (!subtaskTitle.trim()) return;
     submitting = true;
     try {
-      await createSubtask(taskKey, { title: subtaskTitle.trim(), status_id: selectedStatus || undefined });
+      // 继承当前状态,但完成列只有可定稿的人才能作为子任务初始状态,其余回落后端默认状态。
+      const inherit = statuses.find((status) => status.id === selectedStatus);
+      const statusId = inherit && (inherit.category !== 'done' || statusControl.canSetDone) ? selectedStatus : undefined;
+      await createSubtask(taskKey, { title: subtaskTitle.trim(), status_id: statusId || undefined });
       subtaskTitle = '';
       subtasks = (await getSubtasks(taskKey)).data;
     } catch (error) {
@@ -139,6 +181,55 @@
     }
   }
 
+  async function changeReviewer(reviewerId: string | null) {
+    if (!task || reviewerId === task.reviewer_id) return;
+    submitting = true;
+    try {
+      task = (await updateTask(task.task_key, { reviewer_id: reviewerId })).data;
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '评审人修改失败';
+    } finally {
+      submitting = false;
+    }
+  }
+
+  async function changeDueAt() {
+    if (!task) return;
+    const original = task.due_at;
+    const nextIso = selectedDueAt ? new Date(selectedDueAt).toISOString() : null;
+    if ((original ?? null) === nextIso) return;
+    submitting = true;
+    try {
+      task = (await updateTask(task.task_key, { due_at: nextIso })).data;
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '截止时间修改失败';
+      selectedDueAt = task.due_at ? isoToLocalInput(task.due_at) : '';
+    } finally {
+      submitting = false;
+    }
+  }
+
+  // 归属变更:根任务挂靠为子任务,或子任务脱离父任务转回主任务。
+  async function changeParent(parentId: string | null) {
+    if (!task) return;
+    reparenting = true;
+    errorMessage = '';
+    try {
+      const updated = (await updateTask(task.task_key, { parent_task_id: parentId })).data;
+      task = updated;
+      attachParentId = '';
+      // 归属变了,子任务列表与根任务选择集同步调整。
+      subtasks = (await getSubtasks(taskKey)).data;
+      rootTasks = parentId
+        ? rootTasks.filter((item) => item.id !== updated.id)
+        : [...rootTasks, updated];
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '任务归属修改失败';
+    } finally {
+      reparenting = false;
+    }
+  }
+
   // 选图后立刻上传:详情页图片直接落库,评论图片先进暂存区,提交时一并关联。
   async function uploadImages(event: Event, into: 'task' | 'pending') {
     const input = event.currentTarget as HTMLInputElement;
@@ -195,6 +286,7 @@
     crumbs={[
       { label: '任务', href: '/tasks' },
       { label: projectKey, href: `/projects/${projectKey}/board` },
+      ...(parentTask ? [{ label: `父任务 ${parentTask.task_key}`, href: `/tasks/${parentTask.task_key}` }] : []),
       { label: task.task_key }
     ]}
     description={task.description || '暂无描述。'}
@@ -204,16 +296,32 @@
       <div class="field-grid">
         <div>
           <span class="field-label">任务状态</span>
-          <select bind:value={selectedStatus} onchange={changeStatus} disabled={submitting}>
-            {#each statuses as status}<option value={status.id}>{status.name}</option>{/each}
-            {#if !statuses.length}<option value={task.status_id}>{statusName(task.status_id)}</option>{/if}
+          <select bind:value={selectedStatus} onchange={changeStatus} disabled={submitting || !statusControl.canChange}>
+            {#each statusControl.options as status}<option value={status.id}>{status.name}</option>{/each}
+            {#if !statusControl.options.length}<option value={task.status_id}>{statusName(task.status_id)}</option>{/if}
           </select>
+          {#if !statusControl.canChange}<span class="flow-hint">仅负责人或评审人可变更状态</span>{/if}
         </div>
         <div>
           <span class="field-label">负责人</span>
           <MemberPicker value={task.assignee_id} {members} disabled={submitting} onchange={changeAssignee} ariaLabel={`设置 ${task.title} 的负责人`} />
         </div>
+        <div>
+          <span class="field-label">评审人</span>
+          <MemberPicker value={task.reviewer_id} {members} disabled={submitting} onchange={changeReviewer} ariaLabel={`设置 ${task.title} 的评审人`} />
+        </div>
         <div><span class="field-label">优先级</span><strong class="priority">{priorityName[task.priority]}</strong></div>
+        <div>
+          <span class="field-label">截止时间</span>
+          <input
+            class="due-input"
+            type="datetime-local"
+            bind:value={selectedDueAt}
+            onchange={changeDueAt}
+            disabled={submitting}
+            aria-label="截止时间"
+          />
+        </div>
         <div><span class="field-label">任务编号</span><strong class="mono">#{task.task_number}</strong></div>
         <div><span class="field-label">更新时间</span><strong>{new Date(task.updated_at).toLocaleString('zh-CN')}</strong></div>
       </div>
@@ -248,7 +356,7 @@
       </div>
       <div class="subtask-heading">
         <div><h2>子任务</h2><p>子任务不能再创建子任务。</p></div>
-        <span>{subtasks.length} 项</span>
+        <span>{subtasks.length} 项 · 已完成 {doneSubtasks}</span>
       </div>
       <div class="subtask-list">
         {#each subtasks as subtask}
@@ -316,6 +424,34 @@
       </div>
     </section>
     <aside class="workspace-card side-card">
+      <h2>任务归属</h2>
+      {#if parentTask}
+        <p class="parent-line">
+          当前是 <a href={`/tasks/${parentTask.task_key}`}>{parentTask.task_key}</a> 的子任务,
+          脱离后转回主任务,看板与列表不再显示父任务标识。
+        </p>
+        <button class="secondary-button" type="button" onclick={() => changeParent(null)} disabled={reparenting}>
+          {reparenting ? '处理中…' : '脱离父任务'}
+        </button>
+      {:else}
+        <p>挂靠后成为所选任务的子任务,在看板卡片与列表行显示「↳ 父任务」标识。</p>
+        <select bind:value={attachParentId} disabled={reparenting} aria-label="选择父任务">
+          <option value="">选择要挂靠的任务</option>
+          {#each rootTasks as root (root.id)}
+            {#if root.id !== task.id}
+              <option value={root.id}>{root.task_key} · {root.title}</option>
+            {/if}
+          {/each}
+        </select>
+        <button
+          class="secondary-button"
+          type="button"
+          disabled={reparenting || !attachParentId}
+          onclick={() => attachParentId && changeParent(attachParentId)}
+        >
+          {reparenting ? '处理中…' : '设为子任务'}
+        </button>
+      {/if}
       <h2>操作</h2>
       <p>删除采用逻辑删除，动作会写入项目操作日志。</p>
       <button class="danger-button" type="button" onclick={removeTask} disabled={deleting}>{deleting ? '删除中…' : '逻辑删除任务'}</button>
@@ -331,6 +467,7 @@
   .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--color-border); }
   .field-grid > div { display: grid; gap: 7px; min-width: 0; }
   .field-label { color: var(--color-text-muted); font-size: 12px; font-weight: 500; }
+  .flow-hint { color: var(--color-text-muted); font-size: 11px; }
   .field-grid select { min-width: 0; }
   .priority { color: var(--color-warning); }
   .mono { font-family: var(--font-mono); }
@@ -376,7 +513,10 @@
   .pending-image button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; line-height: 1; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 14px; border-radius: var(--radius-sm); }
   .text-button { border: 0; background: transparent; color: var(--color-danger); font-weight: 500; cursor: pointer; }
   .side-card { display: grid; align-content: start; gap: 12px; height: max-content; }
-  .danger-button { border: 0; }
+  .parent-line a { color: var(--color-primary-strong); font-family: var(--font-mono); font-size: 13px; }
+  .side-card select { width: 100%; }
+  .side-card .secondary-button, .side-card .danger-button { border: 0; }
+  .due-input { min-width: 0; }
   .error-message { color: var(--color-danger); font-size: 13px; }
   .state-box { display: grid; place-items: center; gap: 12px; min-height: 220px; }
   .error-state { color: var(--color-danger); }
