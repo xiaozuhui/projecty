@@ -39,6 +39,15 @@
   const isActive = (href: string) =>
     href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
 
+  // 顶栏位置指示:复用侧栏导航定义,避免再维护一份路由→名称映射。
+  const currentLocation = $derived.by(() => {
+    for (const group of navGroups) {
+      const link = group.links.find((item) => isActive(item.href));
+      if (link) return `${group.title} · ${link.label}`;
+    }
+    return '';
+  });
+
   async function signOut() {
     if (loggingOut) return;
     loggingOut = true;
@@ -77,12 +86,11 @@
   </aside>
   <main class="content-shell">
     <div class="topbar">
-      <div><strong>内部项目管理</strong><span>项目 / 任务 / 子任务 / 日志</span></div>
+      <div><strong>内部项目管理</strong>{#if currentLocation}<span>{currentLocation}</span>{/if}</div>
       <div class="topbar-actions">
         <button class="icon-button" type="button" onclick={toggleTheme} aria-label={theme.current === 'dark' ? '切换到浅色主题' : '切换到暗色主题'} title={theme.current === 'dark' ? '切换到浅色主题' : '切换到暗色主题'}>
           <Icon name={theme.current === 'dark' ? 'sun' : 'moon'} size={15} />
         </button>
-        <a class="primary-button" href="/projects/new"><Icon name="plus" size={14} />新建项目</a>
       </div>
     </div>
     <div class="content-scroll">{@render children()}</div>
