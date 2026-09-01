@@ -3,8 +3,9 @@
   import Avatar from '$lib/components/Avatar.svelte';
   import PriorityPill from '$lib/components/PriorityPill.svelte';
   import { ApiClientError } from '$lib/api/client';
-  import { listMyTasks } from '$lib/api/tasks';
+  import { deleteTask, listMyTasks } from '$lib/api/tasks';
   import type { TaskListItem } from '$lib/api/types';
+  import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
 
   type Scope = 'assignee' | 'reporter' | 'all';
@@ -22,6 +23,7 @@
   let loading = $state(true);
   let appending = $state(false);
   let errorMessage = $state('');
+  let deletingId = $state<string | null>(null);
 
   const groups = $derived.by(() => {
     const map = new Map<string, { projectKey: string; projectName: string; tasks: TaskListItem[] }>();
@@ -61,6 +63,29 @@
     scope = next;
     items = [];
     void load(1);
+  }
+
+  async function removeTask(task: TaskListItem) {
+    if (
+      !(await confirmDialog({
+        title: '逻辑删除任务',
+        message: `确定删除 ${task.task_key}「${task.title}」吗？删除后可在项目操作日志追溯。`,
+        confirmLabel: '删除',
+        danger: true
+      }))
+    ) {
+      return;
+    }
+    deletingId = task.id;
+    errorMessage = '';
+    try {
+      await deleteTask(task.task_key, '用户从全局任务列表删除任务');
+      items = items.filter((item) => item.id !== task.id);
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '任务删除失败';
+    } finally {
+      deletingId = null;
+    }
   }
 
   bindReload(() => void load(1));
@@ -111,16 +136,26 @@
       </header>
       <div class="task-rows">
         {#each group.tasks as task (task.id)}
-          <a class="task-row" href={`/tasks/${task.task_key}`}>
-            <span class="task-key">{task.task_key}</span>
-            <span class="task-title">{task.title}</span>
-            <span class="status-pill">{task.status_name}</span>
-            <PriorityPill priority={task.priority} />
-            <span class="assignee">
-              {#if task.assignee_name}<Avatar name={task.assignee_name} size={18} />{task.assignee_name}{:else}未分配{/if}
-            </span>
-            <time>{new Date(task.updated_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</time>
-          </a>
+          <div class="task-row">
+            <a class="task-main" href={`/tasks/${task.task_key}`}>
+              <span class="task-key">{task.task_key}</span>
+              <span class="task-title">{task.title}</span>
+              <span class="status-pill">{task.status_name}</span>
+              <PriorityPill priority={task.priority} />
+              <span class="assignee">
+                {#if task.assignee_name}<Avatar name={task.assignee_name} size={18} />{task.assignee_name}{:else}未分配{/if}
+              </span>
+              <time>{new Date(task.updated_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</time>
+            </a>
+            <button
+              class="row-delete"
+              type="button"
+              disabled={deletingId === task.id}
+              onclick={() => removeTask(task)}
+            >
+              {deletingId === task.id ? '删除中…' : '删除'}
+            </button>
+          </div>
         {/each}
       </div>
     </section>
@@ -182,24 +217,46 @@
 
   .task-rows { display: grid; }
   .task-row {
-    display: grid;
-    grid-template-columns: 110px minmax(0, 1fr) auto auto minmax(90px, auto) auto;
+    display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 10px;
     padding: 10px 2px;
     border-bottom: 1px solid var(--color-border-weak);
-    color: var(--color-text);
-    text-decoration: none;
     font-size: 13px;
     transition: background-color var(--transition-fast);
   }
   .task-row:last-child { border-bottom: 0; }
   .task-row:hover { background: var(--color-hover); }
+  .task-main {
+    display: grid;
+    grid-template-columns: 110px minmax(0, 1fr) auto auto minmax(90px, auto) auto;
+    align-items: center;
+    gap: 14px;
+    flex: 1;
+    min-width: 0;
+    color: var(--color-text);
+    text-decoration: none;
+  }
+  .row-delete {
+    flex: none;
+    border: 0;
+    padding: 4px 8px;
+    background: transparent;
+    color: var(--color-danger);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    opacity: 0;
+    transition: opacity var(--transition-fast), background-color var(--transition-fast);
+  }
+  .task-row:hover .row-delete, .row-delete:focus-visible { opacity: 1; }
+  .row-delete:disabled { cursor: not-allowed; opacity: 0.45; }
   .task-key { color: var(--color-text-muted); font-family: var(--font-mono); font-size: 12px; }
-  .task-row:hover .task-key { color: var(--color-primary-strong); }
+  .task-main:hover .task-key { color: var(--color-primary-strong); }
   .task-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   .assignee { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-muted); }
-  .task-row time { color: var(--color-text-muted); font-size: 12px; }
+  .task-main time { color: var(--color-text-muted); font-size: 12px; }
 
   .state-box { display: grid; place-items: center; gap: 8px; min-height: 200px; color: var(--color-text-muted); }
   .state-box strong { color: var(--color-text-secondary); font-size: 14px; font-weight: 500; }
@@ -209,7 +266,8 @@
   .pager { display: flex; justify-content: center; padding: 6px 0 14px; }
 
   @media (max-width: 760px) {
-    .task-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
-    .task-row :global(.priority-pill), .assignee { display: none; }
+    .task-main { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+    .task-main :global(.priority-pill), .assignee { display: none; }
+    .row-delete { opacity: 1; }
   }
 </style>
