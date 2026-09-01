@@ -4,6 +4,8 @@
   import { listDepartments } from '$lib/api/departments';
   import { me } from '$lib/api/auth';
   import { createUser, downloadUserTemplate, importUsers, listUsers, updateUser, type UserListQuery } from '$lib/api/users';
+  import Modal from '$lib/components/Modal.svelte';
+  import DepartmentGroupSelect from '$lib/features/user-form/DepartmentGroupSelect.svelte';
   import { alertDialog, confirmDialog, promptDialog } from '$lib/features/ui/dialog.svelte';
   import type { DepartmentView, MeResponse, UserImportReport, UserView } from '$lib/api/types';
 
@@ -21,6 +23,10 @@
   let role = $state<'user' | 'super_admin'>('user');
   let selectedDepartments = $state<string[]>([]);
   let saving = $state(false);
+  // 行内「部门」编辑弹窗:分组下拉多选,保存时整体替换归属
+  let deptEditUser = $state<UserView | null>(null);
+  let deptEditIds = $state<string[]>([]);
+  let savingDepartments = $state(false);
   let importFile = $state<File | null>(null);
   let importing = $state(false);
   let importReport = $state<UserImportReport | null>(null);
@@ -69,10 +75,6 @@
     }
   }
 
-  function toggleDepartment(id: string) {
-    selectedDepartments = selectedDepartments.includes(id) ? selectedDepartments.filter((item) => item !== id) : [...selectedDepartments, id];
-  }
-
   async function rename(user: UserView) {
     const value = await promptDialog({ title: '修改姓名', label: '姓名', initial: user.display_name });
     if (!value?.trim() || value.trim() === user.display_name) return;
@@ -95,22 +97,23 @@
     }
   }
 
-  async function changeDepartments(user: UserView) {
-    const current = user.departments.map((item) => item.name).join('/');
-    const value = await promptDialog({ title: '调整部门归属', label: '多个部门用 / 分隔，留空表示移出全部部门', initial: current });
-    if (value === null) return;
-    const names = value.split('/').map((name) => name.trim()).filter(Boolean);
-    const ids: string[] = [];
-    for (const name of names) {
-      const department = departments.find((item) => item.name === name);
-      if (!department) { await alertDialog({ title: '部门不存在', message: `没有找到部门：${name}` }); return; }
-      ids.push(department.id);
-    }
+  function changeDepartments(user: UserView) {
+    deptEditIds = user.departments.map((item) => item.id);
+    deptEditUser = user;
+  }
+
+  async function saveDepartments() {
+    if (!deptEditUser) return;
+    savingDepartments = true;
     try {
-      const updated = (await updateUser(user.id, { department_ids: ids })).data;
-      users = users.map((item) => (item.id === user.id ? { ...item, ...updated } : item));
+      const updated = (await updateUser(deptEditUser.id, { department_ids: deptEditIds })).data;
+      users = users.map((item) => (item.id === updated.id ? { ...item, ...updated } : item));
+      deptEditUser = null;
+      errorMessage = '';
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : '调整部门失败';
+    } finally {
+      savingDepartments = false;
     }
   }
 
@@ -173,9 +176,15 @@
         <option value="user">员工</option>
         <option value="super_admin">超级管理员</option>
       </select>
-      <div class="department-picker">
-        {#each departments as department}<label><input type="checkbox" checked={selectedDepartments.includes(department.id)} onchange={() => toggleDepartment(department.id)} />{department.name}</label>{/each}
-        {#if !departments.length}<small class="muted">还没有部门，可先到「部门」页面创建。</small>{/if}
+      <div class="department-field">
+        <DepartmentGroupSelect
+          departments={departments}
+          value={selectedDepartments}
+          multiple
+          ariaLabel="所属部门(可多选)"
+          onchange={(ids) => (selectedDepartments = ids as string[])}
+        />
+        <small class="muted">{departments.length ? '按顶级部门分组，子部门缩进列出；按住 ⌘/Ctrl 可多选。' : '还没有部门，可先到「部门」页面创建。'}</small>
       </div>
       <button class="primary-button" disabled={saving}>{saving ? '保存中…' : '创建用户'}</button>
     </form>
@@ -211,10 +220,13 @@
   <section class="workspace-card list-card">
     <div class="filters">
       <input bind:value={search} placeholder="搜索账号或姓名" onkeydown={(event) => event.key === 'Enter' && load()} />
-      <select bind:value={departmentFilter} onchange={load}>
-        <option value="">全部部门</option>
-        {#each departments as department}<option value={department.id}>{department.name}</option>{/each}
-      </select>
+      <DepartmentGroupSelect
+        departments={departments}
+        value={departmentFilter}
+        placeholder="全部部门"
+        ariaLabel="按部门筛选"
+        onchange={(value) => { departmentFilter = String(value); void load(); }}
+      />
       <label class="muted"><input type="checkbox" bind:checked={includeInactive} onchange={load} />包含已停用</label>
       <button type="button" class="text-button" onclick={load}>查询</button>
     </div>
@@ -244,13 +256,31 @@
       </table>
     </div>
   </section>
+
+  <Modal open={!!deptEditUser} title="调整部门归属" onClose={() => (deptEditUser = null)}>
+    {#if deptEditUser}
+      <p class="modal-hint">为「{deptEditUser.display_name}」({deptEditUser.account})选择所属部门，可多选；不选任何部门即移出全部。</p>
+      <DepartmentGroupSelect
+        departments={departments}
+        value={deptEditIds}
+        multiple
+        ariaLabel="所属部门(可多选)"
+        onchange={(ids) => (deptEditIds = ids as string[])}
+      />
+    {/if}
+    {#snippet footer()}
+      <button class="secondary-button" type="button" onclick={() => (deptEditUser = null)}>取消</button>
+      <button class="primary-button" type="button" onclick={saveDepartments} disabled={savingDepartments}>
+        {savingDepartments ? '保存中…' : '保存'}
+      </button>
+    {/snippet}
+  </Modal>
 {/if}
 
 <style>
   .create-card h2, .import-card h2 { margin: 0 0 14px; }
   .create-card form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; align-items: center; }
-  .department-picker { grid-column: 1 / 4; display: flex; flex-wrap: wrap; gap: 10px 16px; }
-  .department-picker label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+  .department-field { grid-column: 1 / 4; display: grid; gap: 6px; align-self: start; }
   .create-card form > button { justify-self: end; }
   .import-card .import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 10px; }
   .import-summary { margin-top: 12px; font-weight: 500; }
@@ -264,11 +294,12 @@
   .ok { color: var(--color-success); font-weight: 500; }
   .bad { color: var(--color-danger); font-weight: 500; }
   .muted { color: var(--color-text-muted); font-size: 12px; }
+  .modal-hint { margin: 0 0 10px; }
   .empty-inline { text-align: center; padding: 22px 0; }
   .text-button { border: 0; background: transparent; cursor: pointer; font-weight:500; color: var(--color-primary-strong); }
   .danger-text { color: var(--color-danger); }
   .error-state { color: var(--color-danger); margin-bottom: 16px; }
   .state-box { text-align: center; color: var(--color-text-muted); }
   .workspace-card { margin-bottom: 18px; }
-  @media (max-width: 900px) { .create-card form { grid-template-columns: 1fr 1fr; } .department-picker { grid-column: auto; } }
+  @media (max-width: 900px) { .create-card form { grid-template-columns: 1fr 1fr; } .department-field { grid-column: auto; } }
 </style>
