@@ -5,6 +5,7 @@
   import { me } from '$lib/api/auth';
   import { ApiClientError } from '$lib/api/client';
   import { session } from '$lib/features/auth/session.svelte';
+  import { meStore } from '$lib/features/auth/me.svelte';
   import DialogHost from '$lib/features/ui/DialogHost.svelte';
   import type { MeResponse } from '$lib/api/types';
 
@@ -20,6 +21,7 @@
     }
     try {
       user = (await me()).data;
+      meStore.set(user);
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '登录状态验证失败';
       session.clear();
