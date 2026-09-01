@@ -1,7 +1,7 @@
 //! 部门树、闭包表、用户多部门关系和父部门可见性的应用服务。
 
 use chrono::{DateTime, Utc};
-use projecty_entity::{departments, operation_logs, projects};
+use projecty_entity::{departments, operation_logs, projects, user_departments, users};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
     EntityTrait, FromQueryResult, PaginatorTrait, QueryFilter, QueryOrder, Set, Statement,
@@ -77,6 +77,22 @@ pub struct DepartmentListResponse {
 pub struct DepartmentProjectsResponse {
     pub department_id: Uuid,
     pub items: Vec<ProjectView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DepartmentMemberView {
+    pub user_id: Uuid,
+    pub account: String,
+    pub display_name: String,
+    pub system_role: String,
+    pub is_active: bool,
+    pub joined_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DepartmentMembersResponse {
+    pub department_id: Uuid,
+    pub items: Vec<DepartmentMemberView>,
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -303,6 +319,65 @@ pub async fn projects(
         .map(Into::into)
         .collect();
     Ok(DepartmentProjectsResponse {
+        department_id,
+        items,
+    })
+}
+
+/// 直属成员列表:与 projects 端点同一套可见性规则,成员按加入时间倒序,
+/// 用户被逻辑删除后自动从列表隐藏(关系仍在,便于恢复)。
+pub async fn members(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    department_id: Uuid,
+) -> Result<DepartmentMembersResponse, DepartmentError> {
+    find_active_department(db, department_id).await?;
+    if !current_user.system_role.is_super_admin()
+        && !visible_department_ids(db, current_user.user_id, false)
+            .await?
+            .contains(&department_id)
+    {
+        return Err(DepartmentError::Forbidden);
+    }
+    let memberships = user_departments::Entity::find()
+        .filter(user_departments::Column::DepartmentId.eq(department_id))
+        .filter(user_departments::Column::RevokedAt.is_null())
+        .order_by_desc(user_departments::Column::JoinedAt)
+        .order_by_desc(user_departments::Column::UserId)
+        .all(db)
+        .await?;
+    if memberships.is_empty() {
+        return Ok(DepartmentMembersResponse {
+            department_id,
+            items: vec![],
+        });
+    }
+    let user_ids: Vec<Uuid> = memberships
+        .iter()
+        .map(|membership| membership.user_id)
+        .collect();
+    let active_users = users::Entity::find()
+        .filter(users::Column::Id.is_in(user_ids))
+        .filter(users::Column::DeletedAt.is_null())
+        .all(db)
+        .await?;
+    let items = memberships
+        .iter()
+        .filter_map(|membership| {
+            active_users
+                .iter()
+                .find(|user| user.id == membership.user_id)
+                .map(|user| DepartmentMemberView {
+                    user_id: user.id,
+                    account: user.account.clone(),
+                    display_name: user.display_name.clone(),
+                    system_role: user.system_role.clone(),
+                    is_active: user.is_active,
+                    joined_at: membership.joined_at,
+                })
+        })
+        .collect();
+    Ok(DepartmentMembersResponse {
         department_id,
         items,
     })

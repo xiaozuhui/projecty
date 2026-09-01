@@ -16,4 +16,5 @@ pub fn routes() -> Router<AppState> {
             "/departments/{department_id}/projects",
             get(handlers::projects),
         )
+        .route("/departments/{department_id}/users", get(handlers::members))
 }

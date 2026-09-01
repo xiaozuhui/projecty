@@ -13,7 +13,8 @@ use crate::{
     },
     modules::departments::service::{
         self, CreateDepartmentRequest, DeleteDepartmentRequest, DepartmentListResponse,
-        DepartmentProjectsResponse, DepartmentView, ListDepartmentsQuery, UpdateDepartmentRequest,
+        DepartmentMembersResponse, DepartmentProjectsResponse, DepartmentView,
+        ListDepartmentsQuery, UpdateDepartmentRequest,
     },
     state::AppState,
 };
@@ -91,6 +92,17 @@ pub async fn delete(
         .await
         .map_err(map_error)?;
     Ok(success(json!({ "message": "部门已逻辑删除" })))
+}
+
+pub async fn members(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(department_id): Path<Uuid>,
+) -> Result<Json<ApiEnvelope<DepartmentMembersResponse>>, AppError> {
+    let response = service::members(&state.db, &current_user, department_id)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
 }
 
 pub async fn projects(
