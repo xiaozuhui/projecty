@@ -7,11 +7,9 @@
   import { session } from '$lib/features/auth/session.svelte';
   import { meStore } from '$lib/features/auth/me.svelte';
   import DialogHost from '$lib/features/ui/DialogHost.svelte';
-  import type { MeResponse } from '$lib/api/types';
 
   let { children } = $props();
   let ready = $state(false);
-  let user = $state<MeResponse | null>(null);
   let errorMessage = $state('');
 
   onMount(async () => {
@@ -20,8 +18,7 @@
       return;
     }
     try {
-      user = (await me()).data;
-      meStore.set(user);
+      meStore.set((await me()).data);
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '登录状态验证失败';
       session.clear();
@@ -35,8 +32,8 @@
 
 {#if !ready}
   <main class="session-loading"><div class="loading-card"><span class="loading-dot"></span><strong>正在验证登录状态</strong><p>正在连接 Projecty 服务…</p></div></main>
-{:else if user}
-  <AppShell {user}>{@render children()}</AppShell>
+{:else if meStore.current}
+  <AppShell user={meStore.current}>{@render children()}</AppShell>
   <DialogHost />
 {:else if errorMessage}
   <main class="session-loading"><div class="loading-card"><strong>{errorMessage}</strong><a class="primary-button" href="/login">返回登录</a></div></main>

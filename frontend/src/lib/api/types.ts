@@ -1,7 +1,7 @@
 export type SystemRole = 'super_admin' | 'user';
 export type ProjectRole = 'manager' | 'member' | 'viewer';
 export type Priority = 'urgent' | 'high' | 'medium' | 'low' | 'none';
-export type MeResponse = { id: string; account: string; display_name: string; system_role: SystemRole };
+export type MeResponse = { id: string; account: string; display_name: string; email: string | null; system_role: SystemRole };
 export type ProjectView = { id: string; project_key: string; name: string; description: string | null; primary_department_id: string | null; archived_at: string | null; created_at: string; updated_at: string; task_number_seed: number };
 export type ProjectListResponse = { items: ProjectView[]; page: number; page_size: number; has_more: boolean };
 export type ProjectStatus = { id: string; project_id: string; name: string; category: string; sort_order: number; is_default: boolean; created_at: string };

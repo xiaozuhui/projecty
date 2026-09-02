@@ -15,4 +15,8 @@ export function me(token?: string) {
   return apiGet<MeResponse>('/me', token);
 }
 
+export function updateProfile(display_name: string, email: string | null) {
+  return apiPatch<MeResponse>('/me', { display_name, email });
+}
+
 export function changePassword(current_password: string, new_password: string) { return apiPatch<{ message: string }>('/me/password', { current_password, new_password }); }
