@@ -67,7 +67,7 @@ docker compose -f deploy/docker/compose.yml up -d --build
 部署启动后（backend 容器处于运行状态），在后端容器内执行内置的运维子命令创建第一个超级管理员：
 
 ```bash
-docker compose -f deploy/docker/compose.yml exec backend projecty-api admin create --account admin  --password 'Shiki921128?' --display-name '超级管理员'
+docker compose -f deploy/docker/compose.yml exec backend projecty-api admin create --account admin  --password '<密码>' --display-name '超级管理员'
 ```
 
 - 容器内已注入 `DATABASE_URL`，不需要再传 `--database-url`；本地裸跑二进制时才需要通过该参数或环境变量指定数据库连接串。
