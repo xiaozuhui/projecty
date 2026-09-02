@@ -12,6 +12,7 @@ pub struct Model {
     pub account: String,
     pub password_hash: String,
     pub display_name: String,
+    pub email: Option<String>,
     pub system_role: String,
     pub is_active: bool,
     pub last_login_at: Option<DateTime<Utc>>,

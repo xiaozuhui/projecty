@@ -7,6 +7,7 @@ use crate::{
     },
     modules::auth::service::{
         self, AuthSession, ChangePasswordRequest, LoginRequest, MeResponse, RefreshTokenRequest,
+        UpdateProfileRequest,
     },
     state::AppState,
 };
@@ -46,6 +47,15 @@ pub async fn me(
     current_user: CurrentUser,
 ) -> Result<Json<ApiEnvelope<MeResponse>>, AppError> {
     let response = service::me(&state.db, current_user.user_id).await?;
+    Ok(success(response))
+}
+
+pub async fn update_profile(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Json(request): Json<UpdateProfileRequest>,
+) -> Result<Json<ApiEnvelope<MeResponse>>, AppError> {
+    let response = service::update_profile(&state.db, current_user.user_id, request).await?;
     Ok(success(response))
 }
 

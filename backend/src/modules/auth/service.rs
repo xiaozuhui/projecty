@@ -6,7 +6,7 @@ use argon2::{
 };
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use projecty_entity::{jwt_refresh_tokens, users};
+use projecty_entity::{jwt_refresh_tokens, operation_logs, users};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
     Set, TransactionTrait,
@@ -29,6 +29,10 @@ pub enum AuthError {
     InvalidSystemRole,
     #[error("password does not meet the required format")]
     InvalidPassword,
+    #[error("invalid profile input: {0}")]
+    InvalidInput(String),
+    #[error("email is already in use")]
+    EmailAlreadyUsed,
     #[error("database error: {0}")]
     Database(#[from] sea_orm::DbErr),
     #[error("token error: {0}")]
@@ -52,6 +56,12 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileRequest {
+    pub display_name: String,
+    pub email: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AuthSession {
     pub access_token: String,
@@ -65,6 +75,7 @@ pub struct MeResponse {
     pub id: Uuid,
     pub account: String,
     pub display_name: String,
+    pub email: Option<String>,
     pub system_role: SystemRole,
 }
 
@@ -191,12 +202,108 @@ pub async fn me(db: &DatabaseConnection, user_id: Uuid) -> Result<MeResponse, Au
         .one(db)
         .await?
         .ok_or(AuthError::InactiveUser)?;
+    me_from_model(user)
+}
+
+/// 本人维护的基础资料:姓名与邮箱。账号、角色等仍由管理员在用户管理中调整。
+pub async fn update_profile(
+    db: &DatabaseConnection,
+    user_id: Uuid,
+    request: UpdateProfileRequest,
+) -> Result<MeResponse, AuthError> {
+    let user = users::Entity::find_by_id(user_id)
+        .filter(users::Column::IsActive.eq(true))
+        .filter(users::Column::DeletedAt.is_null())
+        .one(db)
+        .await?
+        .ok_or(AuthError::InactiveUser)?;
+    let display_name = normalize_display_name(&request.display_name)?;
+    let email = normalize_email(request.email.as_deref())?;
+    if user.display_name == display_name && user.email == email {
+        return me_from_model(user);
+    }
+    let now = Utc::now();
+    let mut active: users::ActiveModel = user.into();
+    active.display_name = Set(display_name.clone());
+    active.email = Set(email.clone());
+    active.updated_at = Set(now);
+    let updated = active.update(db).await.map_err(map_unique_email)?;
+    operation_logs::ActiveModel {
+        id: Set(Uuid::now_v7()),
+        actor_user_id: Set(user_id),
+        module: Set("users".to_owned()),
+        action: Set("self_update".to_owned()),
+        project_id: Set(None),
+        task_id: Set(None),
+        target_type: Set("user".to_owned()),
+        target_id: Set(Some(user_id)),
+        summary: Set("更新个人资料".to_owned()),
+        diff: Set(Some(serde_json::json!({
+            "display_name": display_name,
+            "email": email,
+        }))),
+        snapshot: Set(None),
+        created_at: Set(now),
+    }
+    .insert(db)
+    .await?;
+    me_from_model(updated)
+}
+
+fn me_from_model(user: users::Model) -> Result<MeResponse, AuthError> {
     Ok(MeResponse {
         id: user.id,
         account: user.account,
         display_name: user.display_name,
+        email: user.email,
         system_role: parse_system_role(&user.system_role)?,
     })
+}
+
+fn normalize_display_name(raw: &str) -> Result<String, AuthError> {
+    let display_name = raw.trim().to_owned();
+    if display_name.is_empty() || display_name.chars().count() > 80 {
+        return Err(AuthError::InvalidInput(
+            "姓名不能为空且不超过 80 个字符".to_owned(),
+        ));
+    }
+    Ok(display_name)
+}
+
+/// 邮箱可选:传 None 或空白视为清除;填写时做格式校验并要求全局唯一。
+fn normalize_email(raw: Option<&str>) -> Result<Option<String>, AuthError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let email = raw.trim().to_owned();
+    if email.is_empty() {
+        return Ok(None);
+    }
+    let valid = email.chars().count() <= 254
+        && !email.chars().any(char::is_whitespace)
+        && email.matches('@').count() == 1
+        && {
+            let (local, domain) = email.split_once('@').unwrap_or(("", ""));
+            !local.is_empty()
+                && local.chars().count() <= 64
+                && domain.matches('.').count() >= 1
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+                && !domain.contains("..")
+        };
+    if !valid {
+        return Err(AuthError::InvalidInput("邮箱格式不正确".to_owned()));
+    }
+    Ok(Some(email))
+}
+
+fn map_unique_email(error: sea_orm::DbErr) -> AuthError {
+    let text = error.to_string().to_ascii_lowercase();
+    if text.contains("email") || text.contains("users_email_key") {
+        AuthError::EmailAlreadyUsed
+    } else {
+        AuthError::Database(error)
+    }
 }
 
 pub async fn change_password(

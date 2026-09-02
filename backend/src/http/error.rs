@@ -61,6 +61,14 @@ impl AppError {
             message: message.into(),
         }
     }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "conflict",
+            message: message.into(),
+        }
+    }
 }
 
 impl From<AuthError> for AppError {
@@ -71,6 +79,8 @@ impl From<AuthError> for AppError {
             AuthError::InactiveUser => Self::unauthorized("账号已停用"),
             AuthError::InvalidSystemRole => Self::internal("用户系统角色配置无效"),
             AuthError::InvalidPassword => Self::bad_request("密码不能为空"),
+            AuthError::InvalidInput(message) => Self::bad_request(message),
+            AuthError::EmailAlreadyUsed => Self::conflict("邮箱已被其他账号使用"),
             AuthError::Database(error) => {
                 tracing::error!(?error, "authentication database operation failed");
                 Self::internal("认证服务暂时不可用")

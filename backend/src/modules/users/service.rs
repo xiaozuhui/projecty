@@ -335,6 +335,7 @@ pub async fn create_user(
         account: Set(account.clone()),
         password_hash: Set(password_hash),
         display_name: Set(display_name.clone()),
+        email: Set(None),
         system_role: Set(system_role_str(payload.system_role).to_owned()),
         is_active: Set(true),
         last_login_at: Set(None),

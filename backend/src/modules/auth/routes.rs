@@ -9,6 +9,6 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/login", post(handlers::login))
         .route("/auth/refresh", post(handlers::refresh))
         .route("/auth/logout", post(handlers::logout))
-        .route("/me", get(handlers::me))
+        .route("/me", get(handlers::me).patch(handlers::update_profile))
         .route("/me/password", patch(handlers::change_password))
 }
