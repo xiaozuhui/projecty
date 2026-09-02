@@ -23,6 +23,8 @@
   let role = $state<'user' | 'super_admin'>('user');
   let selectedDepartments = $state<string[]>([]);
   let saving = $state(false);
+  let createError = $state('');
+  let createOpen = $state(false);
   // 行内「部门」编辑弹窗:下拉多选,保存时整体替换归属
   let deptEditUser = $state<UserView | null>(null);
   let deptEditIds = $state<string[]>([]);
@@ -59,17 +61,24 @@
     }
   });
 
+  function openCreate() {
+    account = ''; displayName = ''; password = ''; role = 'user'; selectedDepartments = [];
+    createError = '';
+    createOpen = true;
+  }
+
   async function submitCreate(event: SubmitEvent) {
     event.preventDefault();
     if (!account.trim() || !displayName.trim() || !password) return;
     saving = true;
+    createError = '';
     try {
       const created = (await createUser({ account: account.trim(), password, display_name: displayName.trim(), system_role: role, department_ids: selectedDepartments })).data;
       users = [created, ...users];
-      account = ''; displayName = ''; password = ''; role = 'user'; selectedDepartments = [];
+      createOpen = false;
       errorMessage = '';
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : '新增用户失败';
+      createError = error instanceof Error ? error.message : '新增用户失败';
     } finally {
       saving = false;
     }
@@ -166,30 +175,6 @@
 {#if currentUser && currentUser.system_role !== 'super_admin'}
   <section class="workspace-card state-box">只有超级管理员可以访问用户管理。</section>
 {:else if !loading}
-  <section class="workspace-card create-card">
-    <h2>新增员工</h2>
-    <form onsubmit={submitCreate}>
-      <input bind:value={account} placeholder="登录账号(2-64 字符)" />
-      <input bind:value={displayName} placeholder="姓名" />
-      <input bind:value={password} type="password" placeholder="初始密码(8-128 位)" />
-      <select bind:value={role}>
-        <option value="user">员工</option>
-        <option value="super_admin">超级管理员</option>
-      </select>
-      <div class="department-field">
-        <DepartmentGroupSelect
-          departments={departments}
-          value={selectedDepartments}
-          multiple
-          ariaLabel="所属部门(可多选)"
-          onchange={(ids) => (selectedDepartments = ids as string[])}
-        />
-        <small class="muted">{departments.length ? '点击下拉框选择所属部门，可多选；不选则不归属任何部门。' : '还没有部门，可先到「部门」页面创建。'}</small>
-      </div>
-      <button class="primary-button" disabled={saving}>{saving ? '保存中…' : '创建用户'}</button>
-    </form>
-  </section>
-
   <section class="workspace-card import-card">
     <h2>批量导入</h2>
     <p class="muted">先下载 Excel 模板，按说明填写后上传；部门填写系统中已存在的名称，多个部门用 / 分隔。已存在的账号所在行会失败，不影响其他行。</p>
@@ -218,6 +203,10 @@
   </section>
 
   <section class="workspace-card list-card">
+    <div class="list-head">
+      <h2>用户列表</h2>
+      <button type="button" class="primary-button" onclick={openCreate}>新增员工</button>
+    </div>
     <div class="filters">
       <input bind:value={search} placeholder="搜索账号或姓名" onkeydown={(event) => event.key === 'Enter' && load()} />
       <DepartmentGroupSelect
@@ -257,6 +246,48 @@
     </div>
   </section>
 
+  <Modal open={createOpen} title="新增员工" onClose={() => (createOpen = false)}>
+    <form id="user-create-form" class="create-form" onsubmit={submitCreate}>
+      <label>
+        登录账号
+        <input bind:value={account} placeholder="2-64 字符" />
+      </label>
+      <label>
+        姓名
+        <input bind:value={displayName} placeholder="姓名" />
+      </label>
+      <label>
+        初始密码
+        <input bind:value={password} type="password" placeholder="8-128 位" />
+      </label>
+      <label>
+        角色
+        <select bind:value={role}>
+          <option value="user">员工</option>
+          <option value="super_admin">超级管理员</option>
+        </select>
+      </label>
+      <div class="field">
+        <span class="field-label">所属部门</span>
+        <DepartmentGroupSelect
+          departments={departments}
+          value={selectedDepartments}
+          multiple
+          ariaLabel="所属部门(可多选)"
+          onchange={(ids) => (selectedDepartments = ids as string[])}
+        />
+        <small class="muted">{departments.length ? '点击下拉框选择所属部门，可多选；不选则不归属任何部门。' : '还没有部门，可先到「部门」页面创建。'}</small>
+      </div>
+      {#if createError}<p class="error-message">{createError}</p>{/if}
+    </form>
+    {#snippet footer()}
+      <button class="secondary-button" type="button" onclick={() => (createOpen = false)}>取消</button>
+      <button class="primary-button" type="submit" form="user-create-form" disabled={saving}>
+        {saving ? '保存中…' : '创建用户'}
+      </button>
+    {/snippet}
+  </Modal>
+
   <Modal open={!!deptEditUser} title="调整部门归属" onClose={() => (deptEditUser = null)}>
     {#if deptEditUser}
       <p class="modal-hint">为「{deptEditUser.display_name}」({deptEditUser.account})选择所属部门，可多选；不选任何部门即移出全部。</p>
@@ -278,10 +309,13 @@
 {/if}
 
 <style>
-  .create-card h2, .import-card h2 { margin: 0 0 14px; }
-  .create-card form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; align-items: center; }
-  .department-field { grid-column: 1 / 4; display: grid; gap: 6px; align-self: start; }
-  .create-card form > button { justify-self: end; }
+  .import-card h2, .list-head h2 { margin: 0; }
+  .import-card h2 { margin-bottom: 14px; }
+  .list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .create-form { display: grid; gap: 14px; }
+  .create-form label, .create-form .field { display: grid; gap: 6px; font-weight: 500; }
+  .create-form small { font-weight: 400; }
+  .error-message { margin: 0; color: var(--color-danger); }
   .import-card .import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 10px; }
   .import-summary { margin-top: 12px; font-weight: 500; }
   .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
@@ -301,5 +335,4 @@
   .error-state { color: var(--color-danger); margin-bottom: 16px; }
   .state-box { text-align: center; color: var(--color-text-muted); }
   .workspace-card { margin-bottom: 18px; }
-  @media (max-width: 900px) { .create-card form { grid-template-columns: 1fr 1fr; } .department-field { grid-column: auto; } }
 </style>
