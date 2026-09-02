@@ -168,7 +168,7 @@ pub async fn create(
         .all(&txn)
         .await?;
         for row in result {
-            txn.execute(Statement::from_sql_and_values(
+            txn.execute_raw(Statement::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 "INSERT INTO department_closure (ancestor_id, descendant_id, depth) VALUES ($1, $2, $3)",
                 [row.ancestor_id.into(), id.into(), (row.depth + 1).into()],
@@ -176,7 +176,7 @@ pub async fn create(
             .await?;
         }
     } else {
-        txn.execute(Statement::from_sql_and_values(
+        txn.execute_raw(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
             "INSERT INTO department_closure (ancestor_id, descendant_id, depth) VALUES ($1, $2, 0)",
             [id.into(), id.into()],

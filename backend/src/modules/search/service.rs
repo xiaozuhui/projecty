@@ -1,8 +1,8 @@
 use crate::http::extractors::CurrentUser;
 use projecty_entity::{projects, tasks, users};
 use sea_orm::{
-    ColumnTrait, DatabaseBackend, DatabaseConnection, EntityTrait, FromQueryResult, QueryFilter,
-    QueryOrder, QuerySelect, Statement,
+    sea_query::ExprTrait, ColumnTrait, DatabaseBackend, DatabaseConnection, EntityTrait,
+    FromQueryResult, QueryFilter, QueryOrder, QuerySelect, Statement,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

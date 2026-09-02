@@ -35,14 +35,14 @@ impl MigrationTrait for Migration {
             .await?;
         manager
             .get_connection()
-            .execute(Statement::from_string(
+            .execute_raw(Statement::from_string(
                 DatabaseBackend::Postgres,
                 "WITH ranked AS (SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY created_at, id) AS number FROM tasks) UPDATE tasks SET task_number = ranked.number FROM ranked WHERE tasks.id = ranked.id",
             ))
             .await?;
         manager
             .get_connection()
-            .execute(Statement::from_string(
+            .execute_raw(Statement::from_string(
                 DatabaseBackend::Postgres,
                 "UPDATE projects SET task_number_seed = COALESCE((SELECT MAX(task_number) FROM tasks WHERE tasks.project_id = projects.id), 0)",
             ))

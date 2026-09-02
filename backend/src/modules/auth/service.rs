@@ -1,7 +1,7 @@
 //! 本地账号密码、密码哈希校验、JWT 签发和 refresh token 生命周期。
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{phc::PasswordHash, PasswordHasher, PasswordVerifier},
     Argon2,
 };
 use chrono::{Duration, Utc};
@@ -91,9 +91,8 @@ pub fn hash_password(password: &str) -> Result<String, AuthError> {
     if password.is_empty() {
         return Err(AuthError::InvalidPassword);
     }
-    let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|_| AuthError::InvalidPassword)
 }
@@ -358,5 +357,12 @@ fn parse_system_role(value: &str) -> Result<SystemRole, AuthError> {
 fn hash_jti(jti: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(jti.as_bytes());
-    format!("{:x}", hasher.finalize())
+    // sha2 0.11 的摘要不再实现 LowerHex,手动转十六进制
+    hasher
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            hex.push_str(&format!("{byte:02x}"));
+            hex
+        })
 }

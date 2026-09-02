@@ -618,7 +618,7 @@ pub async fn move_task(
     }
     let txn = db.begin().await?;
     // 项目级排他:防止并发移动交错读写同一列造成重复或空洞 position。
-    txn.execute(Statement::from_sql_and_values(
+    txn.execute_raw(Statement::from_sql_and_values(
         DatabaseBackend::Postgres,
         "SELECT pg_advisory_xact_lock(hashtext($1))",
         [task.project_id.to_string().into()],
