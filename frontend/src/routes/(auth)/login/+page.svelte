@@ -33,7 +33,6 @@
   <section class="login-card" aria-labelledby="login-title">
     <div class="brand">Projecty</div>
     <h1 id="login-title">账号密码登录</h1>
-    <p>单公司内部系统，本地账号登录后通过 JWT 访问 API。</p>
 
     <form onsubmit={submit}>
       <label>
@@ -51,8 +50,6 @@
         {submitting ? '登录中…' : '登录'}
       </button>
     </form>
-
-    <a href="/forgot-password">忘记密码？</a>
   </section>
 </main>
 
@@ -60,14 +57,12 @@
   .login-page { display: grid; place-items: center; min-height: 100vh; padding: 24px; background: var(--color-bg); }
   .login-card { display: grid; gap: 14px; width: min(100%, 420px); padding: 28px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius:var(--radius-lg); box-shadow: var(--shadow-md); }
   .brand { color: var(--color-primary); font-weight:600; font-size: 24px; letter-spacing: .02em; }
-  h1, p { margin: 0; }
-  p { color: var(--color-text-muted); line-height: 1.6; }
+  h1 { margin: 0; }
   form { display: grid; gap: 14px; }
   label { display: grid; gap: 6px; font-weight:500; }
   input { border: 1px solid var(--color-border); border-radius:var(--radius-md); padding: 11px 12px; color: var(--color-text); background: var(--color-surface); }
   input:focus { outline: 3px solid var(--color-primary-soft); border-color: var(--color-primary); }
   button { border: 0; cursor: pointer; }
   button:disabled { cursor: wait; opacity: .65; }
-  .error { color: var(--color-danger); font-size: 14px; }
-  a { color: var(--color-primary-strong); font-size: 14px; }
+  .error { color: var(--color-danger); font-size: 14px; margin: 0; }
 </style>
