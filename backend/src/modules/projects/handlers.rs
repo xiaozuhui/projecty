@@ -13,8 +13,9 @@ use crate::{
     },
     modules::projects::service::{
         self, AddMemberRequest, CreateProjectRequest, DeleteProjectRequest, ListProjectsQuery,
-        ProjectDepartmentGrantsResponse, ProjectListResponse, ProjectMembersResponse, ProjectView,
-        UpdateMemberRequest, UpdateProjectRequest,
+        MemberCandidatesQuery, MemberCandidatesResponse, ProjectDepartmentGrantsResponse,
+        ProjectListResponse, ProjectMembersResponse, ProjectView, UpdateMemberRequest,
+        UpdateProjectRequest,
     },
     state::AppState,
 };
@@ -175,6 +176,18 @@ pub async fn revoke_member(
     Path((project_key, user_id)): Path<(String, Uuid)>,
 ) -> Result<Json<ApiEnvelope<ProjectMembersResponse>>, AppError> {
     let response = service::revoke_member(&state.db, &current_user, &project_key, user_id)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn list_member_candidates(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(project_key): Path<String>,
+    Query(query): Query<MemberCandidatesQuery>,
+) -> Result<Json<ApiEnvelope<MemberCandidatesResponse>>, AppError> {
+    let response = service::list_member_candidates(&state.db, &current_user, &project_key, &query)
         .await
         .map_err(map_error)?;
     Ok(success(response))

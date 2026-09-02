@@ -1,5 +1,5 @@
 import { apiGet, apiPatch, apiPost } from './client';
-import type { DepartmentListResponse, ProjectDepartmentGrantListResponse, ProjectListResponse, ProjectMemberListResponse, ProjectStatus, ProjectView } from './types';
+import type { DepartmentListResponse, MemberCandidatesResponse, ProjectDepartmentGrantListResponse, ProjectListResponse, ProjectMemberListResponse, ProjectStatus, ProjectView } from './types';
 
 const key = (value: string) => encodeURIComponent(value);
 export function listProjects(page = 1, pageSize = 12) { return apiGet<ProjectListResponse>(`/projects?page=${page}&page_size=${pageSize}`); }
@@ -12,6 +12,7 @@ export function deleteProject(projectKey: string, reason?: string) { return apiP
 export function listStatuses(projectKey: string) { return apiGet<ProjectStatus[]>(`/projects/${key(projectKey)}/statuses`); }
 export function reorderStatuses(projectKey: string, statusIds: string[]) { return apiPatch<ProjectStatus[]>(`/projects/${key(projectKey)}/statuses/order`, { status_ids: statusIds }); }
 export function listProjectMembers(projectKey: string) { return apiGet<ProjectMemberListResponse>(`/projects/${key(projectKey)}/members`); }
+export function listMemberCandidates(projectKey: string, search: string) { return apiGet<MemberCandidatesResponse>(`/projects/${key(projectKey)}/member-candidates?search=${encodeURIComponent(search)}`); }
 export function addProjectMember(projectKey: string, input: { user_id: string; role: string }) { return apiPost<ProjectMemberListResponse>(`/projects/${key(projectKey)}/members`, input); }
 export function updateProjectMember(projectKey: string, userId: string, role: string) { return apiPatch<ProjectMemberListResponse>(`/projects/${key(projectKey)}/members/${key(userId)}`, { role }); }
 export function revokeProjectMember(projectKey: string, userId: string) { return apiPost<ProjectMemberListResponse>(`/projects/${key(projectKey)}/members/${key(userId)}/revoke`); }

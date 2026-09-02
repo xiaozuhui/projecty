@@ -27,6 +27,10 @@ pub fn routes() -> Router<AppState> {
             post(handlers::revoke_member),
         )
         .route(
+            "/projects/{project_key}/member-candidates",
+            get(handlers::list_member_candidates),
+        )
+        .route(
             "/projects/{project_key}/department-grants",
             get(handlers::list_department_grants).post(handlers::grant_department),
         )

@@ -1,8 +1,11 @@
 //! 项目、多负责人、显式成员、部门授权和归档/恢复/逻辑删除的应用服务。
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use projecty_entity::{
-    operation_logs, project_department_grants, project_members, project_statuses, projects, users,
+    departments, operation_logs, project_department_grants, project_members, project_statuses,
+    projects, user_departments, users,
 };
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
@@ -522,6 +525,120 @@ pub async fn add_member(
     .await?;
     txn.commit().await?;
     list_members(db, current_user, project_key).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MemberCandidatesQuery {
+    pub search: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MemberCandidateView {
+    pub user_id: Uuid,
+    pub account: String,
+    pub display_name: String,
+    /// 已是显式成员
+    pub in_project: bool,
+    /// 由部门授权带入(含层级展开)
+    pub via_department: bool,
+    /// 所属部门名列表,用于区分同名用户
+    pub departments: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MemberCandidatesResponse {
+    pub items: Vec<MemberCandidateView>,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct MemberCandidateRow {
+    user_id: Uuid,
+    account: String,
+    display_name: String,
+    in_project: bool,
+    via_department: bool,
+}
+
+// 添加成员时按姓名/账号模糊搜索候选;同名用户靠账号与部门区分,
+// in_project/via_department 标记已在名单中的人,避免重复添加造成困惑。
+pub async fn list_member_candidates(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    project_key: &str,
+    query: &MemberCandidatesQuery,
+) -> Result<MemberCandidatesResponse, ProjectError> {
+    let project = find_project(db, project_key).await?;
+    require_manager(db, current_user, project.id).await?;
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|search| !search.is_empty());
+    let pattern = match search {
+        Some(search) => format!("%{search}%"),
+        None => return Ok(MemberCandidatesResponse { items: vec![] }),
+    };
+    let rows = MemberCandidateRow::find_by_statement(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT u.id AS user_id, u.account, u.display_name, \
+         EXISTS(SELECT 1 FROM project_members pm WHERE pm.project_id = $2 AND pm.user_id = u.id AND pm.revoked_at IS NULL) AS in_project, \
+         EXISTS(SELECT 1 FROM project_department_grants pdg JOIN department_closure dc ON dc.ancestor_id = pdg.department_id JOIN user_departments ud ON ud.department_id = dc.descendant_id AND ud.revoked_at IS NULL WHERE pdg.project_id = $2 AND pdg.revoked_at IS NULL AND ud.user_id = u.id) AS via_department \
+         FROM users u WHERE u.deleted_at IS NULL AND u.is_active AND (u.display_name ILIKE $1 OR u.account ILIKE $1) \
+         ORDER BY u.display_name ASC, u.account ASC LIMIT 20",
+        [pattern.into(), project.id.into()],
+    ))
+    .all(db)
+    .await?;
+    let user_ids: Vec<Uuid> = rows.iter().map(|row| row.user_id).collect();
+    let mut department_map: HashMap<Uuid, Vec<String>> = HashMap::new();
+    if !user_ids.is_empty() {
+        let memberships = user_departments::Entity::find()
+            .filter(user_departments::Column::UserId.is_in(user_ids))
+            .filter(user_departments::Column::RevokedAt.is_null())
+            .all(db)
+            .await?;
+        let dept_ids: Vec<Uuid> = memberships
+            .iter()
+            .map(|membership| membership.department_id)
+            .collect();
+        let name_map: HashMap<Uuid, String> = if dept_ids.is_empty() {
+            HashMap::new()
+        } else {
+            departments::Entity::find()
+                .filter(departments::Column::Id.is_in(dept_ids))
+                .filter(departments::Column::DeletedAt.is_null())
+                .all(db)
+                .await?
+                .into_iter()
+                .map(|department| (department.id, department.name))
+                .collect()
+        };
+        for membership in memberships {
+            if let Some(name) = name_map.get(&membership.department_id) {
+                department_map
+                    .entry(membership.user_id)
+                    .or_default()
+                    .push(name.clone());
+            }
+        }
+    }
+    Ok(MemberCandidatesResponse {
+        items: rows
+            .into_iter()
+            .map(|row| MemberCandidateView {
+                user_id: row.user_id,
+                account: row.account,
+                display_name: row.display_name,
+                in_project: row.in_project,
+                via_department: row.via_department,
+                departments: {
+                    let mut names = department_map.remove(&row.user_id).unwrap_or_default();
+                    names.sort();
+                    names
+                },
+            })
+            .collect(),
+    })
 }
 
 pub async fn update_member(
