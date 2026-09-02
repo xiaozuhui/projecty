@@ -23,7 +23,7 @@
   let role = $state<'user' | 'super_admin'>('user');
   let selectedDepartments = $state<string[]>([]);
   let saving = $state(false);
-  // 行内「部门」编辑弹窗:分组下拉多选,保存时整体替换归属
+  // 行内「部门」编辑弹窗:下拉多选,保存时整体替换归属
   let deptEditUser = $state<UserView | null>(null);
   let deptEditIds = $state<string[]>([]);
   let savingDepartments = $state(false);
@@ -184,7 +184,7 @@
           ariaLabel="所属部门(可多选)"
           onchange={(ids) => (selectedDepartments = ids as string[])}
         />
-        <small class="muted">{departments.length ? '按顶级部门分组，子部门缩进列出；按住 ⌘/Ctrl 可多选。' : '还没有部门，可先到「部门」页面创建。'}</small>
+        <small class="muted">{departments.length ? '点击下拉框选择所属部门，可多选；不选则不归属任何部门。' : '还没有部门，可先到「部门」页面创建。'}</small>
       </div>
       <button class="primary-button" disabled={saving}>{saving ? '保存中…' : '创建用户'}</button>
     </form>
