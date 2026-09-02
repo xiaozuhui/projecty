@@ -1,6 +1,6 @@
 //! 用户管理：超级管理员创建/维护员工账号、部门归属与 Excel 批量导入。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use projecty_entity::{departments, jwt_refresh_tokens, operation_logs, user_departments, users};
@@ -555,17 +555,34 @@ async fn replace_memberships(
     departments: Vec<departments::Model>,
     now: DateTime<Utc>,
 ) -> Result<(), UserError> {
-    let current = user_departments::Entity::find()
+    // (user_id, department_id) 是物理主键,已撤销的历史行仍占用该键,
+    // 不能"先撤销再重插":保留交集、撤销多余行、复活重新加入的历史行,只插入全新行。
+    let history = user_departments::Entity::find()
         .filter(user_departments::Column::UserId.eq(user_id))
-        .filter(user_departments::Column::RevokedAt.is_null())
         .all(txn)
         .await?;
-    for membership in current {
+    let target: HashSet<Uuid> = departments.iter().map(|d| d.id).collect();
+    let mut existing: HashSet<Uuid> = HashSet::new();
+    for membership in history {
+        existing.insert(membership.department_id);
+        let keep = target.contains(&membership.department_id);
+        match (membership.revoked_at.is_some(), keep) {
+            (false, true) | (true, false) => continue, // 归属不变 / 历史撤销行保持原样
+            _ => {}
+        }
         let mut active: user_departments::ActiveModel = membership.into();
-        active.revoked_at = Set(Some(now));
+        if keep {
+            active.revoked_at = Set(None);
+            active.joined_at = Set(now);
+        } else {
+            active.revoked_at = Set(Some(now));
+        }
         active.update(txn).await?;
     }
     for department in departments {
+        if existing.contains(&department.id) {
+            continue;
+        }
         user_departments::ActiveModel {
             user_id: Set(user_id),
             department_id: Set(department.id),
