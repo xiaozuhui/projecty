@@ -63,6 +63,7 @@ pub struct CreateTaskRequest {
     pub status_id: Option<Uuid>,
     pub assignee_id: Option<Uuid>,
     pub reviewer_id: Option<Uuid>,
+    pub start_at: Option<DateTime<Utc>>,
     pub due_at: Option<DateTime<Utc>>,
     pub parent_task_id: Option<Uuid>,
 }
@@ -77,6 +78,8 @@ pub struct UpdateTaskRequest {
     pub assignee_id: Option<Option<Uuid>>,
     #[serde(default, deserialize_with = "double_option")]
     pub reviewer_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub start_at: Option<Option<DateTime<Utc>>>,
     #[serde(default, deserialize_with = "double_option")]
     pub due_at: Option<Option<DateTime<Utc>>>,
     /// 变更任务归属:null=脱离父任务转为主任务,Some=挂靠到指定根任务。
@@ -127,6 +130,7 @@ pub struct TaskView {
     pub reviewer_id: Option<Uuid>,
     pub reviewer_name: Option<String>,
     pub reporter_id: Uuid,
+    pub start_at: Option<DateTime<Utc>>,
     pub due_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -374,6 +378,7 @@ async fn create_task(
 ) -> Result<TaskView, TaskError> {
     let title = required_title(request.title)?;
     let priority = normalize_priority(request.priority)?;
+    validate_task_schedule(request.start_at, request.due_at)?;
     if let Some(assignee_id) = request.assignee_id {
         validate_task_user(db, project.id, assignee_id, "负责人").await?;
     }
@@ -429,6 +434,7 @@ async fn create_task(
         reporter_id: Set(current_user.user_id),
         assignee_id: Set(request.assignee_id),
         reviewer_id: Set(request.reviewer_id),
+        start_at: Set(request.start_at),
         due_at: Set(request.due_at),
         created_at: Set(now),
         updated_at: Set(now),
@@ -465,6 +471,9 @@ pub async fn update(
     require_write_role(db, current_user, task.project_id).await?;
     ensure_project_open_by_id(db, task.project_id).await?;
     let old = serde_json::to_value(&task)?;
+    let next_start_at = request.start_at.clone().unwrap_or(task.start_at);
+    let next_due_at = request.due_at.clone().unwrap_or(task.due_at);
+    validate_task_schedule(next_start_at, next_due_at)?;
     let mut active: tasks::ActiveModel = task.clone().into_active_model();
     let mut diff = serde_json::Map::new();
     if let Some(title) = request.title {
@@ -493,6 +502,10 @@ pub async fn update(
         }
         active.reviewer_id = Set(reviewer_id);
         diff.insert("reviewer_id".to_owned(), json!(reviewer_id));
+    }
+    if let Some(start_at) = request.start_at {
+        active.start_at = Set(start_at);
+        diff.insert("start_at".to_owned(), json!(start_at));
     }
     if let Some(due_at) = request.due_at {
         active.due_at = Set(due_at);
@@ -1124,6 +1137,20 @@ fn required_title(title: String) -> Result<String, TaskError> {
     Ok(title.to_owned())
 }
 
+fn validate_task_schedule(
+    start_at: Option<DateTime<Utc>>,
+    due_at: Option<DateTime<Utc>>,
+) -> Result<(), TaskError> {
+    if let (Some(start_at), Some(due_at)) = (start_at, due_at) {
+        if start_at > due_at {
+            return Err(TaskError::InvalidInput(
+                "开始时间不能晚于结束时间".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn normalize_priority(priority: Option<String>) -> Result<String, TaskError> {
     let priority = priority.unwrap_or_else(|| "medium".to_owned());
     match priority.as_str() {
@@ -1152,6 +1179,7 @@ impl From<tasks::Model> for TaskView {
             reviewer_id: value.reviewer_id,
             reviewer_name: None,
             reporter_id: value.reporter_id,
+            start_at: value.start_at,
             due_at: value.due_at,
             created_at: value.created_at,
             updated_at: value.updated_at,

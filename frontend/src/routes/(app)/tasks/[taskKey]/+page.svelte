@@ -25,13 +25,18 @@
   let members = $state<ProjectMember[]>([]);
   let rootTasks = $state<TaskView[]>([]);
   let selectedStatus = $state('');
+  let selectedStartAt = $state('');
   let selectedDueAt = $state('');
+  let selectedAssigneeId = $state<string | null>(null);
+  let selectedReviewerId = $state<string | null>(null);
+  let savingDetails = $state(false);
   let attachParentId = $state('');
   let showSubtaskModal = $state(false);
   let subtaskTitle = $state('');
   let subtaskDescription = $state('');
   let subtaskAssigneeId = $state<string | null>(null);
   let subtaskReviewerId = $state<string | null>(null);
+  let subtaskStartAt = $state('');
   let subtaskDueAt = $state('');
   let subtaskComment = $state('');
   let subtaskImages = $state<{ file: File; url: string }[]>([]);
@@ -99,7 +104,10 @@
       members = memberResponse.data.items;
       rootTasks = projectTaskResponse.data.items.filter((item) => !item.parent_task_id);
       selectedStatus = task.status_id;
+      selectedStartAt = taskResponse.data.start_at ? isoToLocalInput(taskResponse.data.start_at) : '';
       selectedDueAt = taskResponse.data.due_at ? isoToLocalInput(taskResponse.data.due_at) : '';
+      selectedAssigneeId = taskResponse.data.assignee_id;
+      selectedReviewerId = taskResponse.data.reviewer_id;
       attachParentId = '';
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务加载失败';
@@ -127,6 +135,7 @@
     subtaskDescription = '';
     subtaskAssigneeId = null;
     subtaskReviewerId = null;
+    subtaskStartAt = '';
     subtaskDueAt = '';
     subtaskComment = '';
     subtaskImages = [];
@@ -177,6 +186,7 @@
         status_id: statusId || undefined,
         assignee_id: subtaskAssigneeId,
         reviewer_id: subtaskReviewerId,
+        start_at: subtaskStartAt ? new Date(subtaskStartAt).toISOString() : undefined,
         due_at: subtaskDueAt ? new Date(subtaskDueAt).toISOString() : undefined
       })).data;
 
@@ -241,43 +251,26 @@
     }
   }
 
-  async function changeAssignee(assigneeId: string | null) {
-    if (!task || assigneeId === task.assignee_id) return;
-    submitting = true;
-    try {
-      task = (await updateTask(task.task_key, { assignee_id: assigneeId })).data;
-    } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '负责人修改失败';
-    } finally {
-      submitting = false;
-    }
-  }
-
-  async function changeReviewer(reviewerId: string | null) {
-    if (!task || reviewerId === task.reviewer_id) return;
-    submitting = true;
-    try {
-      task = (await updateTask(task.task_key, { reviewer_id: reviewerId })).data;
-    } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '评审人修改失败';
-    } finally {
-      submitting = false;
-    }
-  }
-
-  async function changeDueAt() {
+  async function saveTaskDetails() {
     if (!task) return;
-    const original = task.due_at;
-    const nextIso = selectedDueAt ? new Date(selectedDueAt).toISOString() : null;
-    if ((original ?? null) === nextIso) return;
-    submitting = true;
+    savingDetails = true;
+    errorMessage = '';
     try {
-      task = (await updateTask(task.task_key, { due_at: nextIso })).data;
+      const updated = (await updateTask(task.task_key, {
+        assignee_id: selectedAssigneeId,
+        reviewer_id: selectedReviewerId,
+        start_at: selectedStartAt ? new Date(selectedStartAt).toISOString() : null,
+        due_at: selectedDueAt ? new Date(selectedDueAt).toISOString() : null
+      })).data;
+      task = updated;
+      selectedAssigneeId = updated.assignee_id;
+      selectedReviewerId = updated.reviewer_id;
+      selectedStartAt = updated.start_at ? isoToLocalInput(updated.start_at) : '';
+      selectedDueAt = updated.due_at ? isoToLocalInput(updated.due_at) : '';
     } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '截止时间修改失败';
-      selectedDueAt = task.due_at ? isoToLocalInput(task.due_at) : '';
+      errorMessage = error instanceof ApiClientError ? error.message : '任务信息保存失败';
     } finally {
-      submitting = false;
+      savingDetails = false;
     }
   }
 
@@ -376,26 +369,41 @@
         </div>
         <div>
           <span class="field-label">负责人</span>
-          <MemberPicker value={task.assignee_id} {members} disabled={submitting} onchange={changeAssignee} ariaLabel={`设置 ${task.title} 的负责人`} />
+          <MemberPicker value={selectedAssigneeId} {members} disabled={submitting || savingDetails} onchange={(value) => (selectedAssigneeId = value)} ariaLabel={`设置 ${task.title} 的负责人`} />
         </div>
         <div>
           <span class="field-label">评审人</span>
-          <MemberPicker value={task.reviewer_id} {members} disabled={submitting} onchange={changeReviewer} ariaLabel={`设置 ${task.title} 的评审人`} />
+          <MemberPicker value={selectedReviewerId} {members} disabled={submitting || savingDetails} onchange={(value) => (selectedReviewerId = value)} ariaLabel={`设置 ${task.title} 的评审人`} />
         </div>
         <div><span class="field-label">优先级</span><strong class="priority">{priorityName[task.priority]}</strong></div>
         <div>
-          <span class="field-label">截止时间</span>
+          <span class="field-label">开始时间</span>
+          <input
+            class="due-input"
+            type="datetime-local"
+            bind:value={selectedStartAt}
+            disabled={submitting || savingDetails}
+            aria-label="开始时间"
+          />
+        </div>
+        <div>
+          <span class="field-label">结束时间</span>
           <input
             class="due-input"
             type="datetime-local"
             bind:value={selectedDueAt}
-            onchange={changeDueAt}
-            disabled={submitting}
-            aria-label="截止时间"
+            disabled={submitting || savingDetails}
+            aria-label="结束时间"
           />
         </div>
         <div><span class="field-label">任务编号</span><strong class="mono">#{task.task_number}</strong></div>
         <div><span class="field-label">更新时间</span><strong>{new Date(task.updated_at).toLocaleString('zh-CN')}</strong></div>
+      </div>
+      <div class="details-save-bar">
+        <span>负责人、审批人和排期修改后，点击保存才会生效。</span>
+        <button class="primary-button" type="button" onclick={saveTaskDetails} disabled={savingDetails || submitting}>
+          {savingDetails ? '保存中…' : '保存任务信息'}
+        </button>
       </div>
       <div class="description-block">
         <span class="field-label">任务描述</span>
@@ -552,10 +560,16 @@
         <MemberPicker value={subtaskReviewerId} {members} onchange={(value) => (subtaskReviewerId = value)} ariaLabel="子任务审批人" />
       </label>
     </div>
-    <label>
-      <span>到期时间</span>
-      <input type="datetime-local" bind:value={subtaskDueAt} aria-label="子任务到期时间" />
-    </label>
+    <div class="subtask-form-row">
+      <label>
+        <span>开始时间</span>
+        <input type="datetime-local" bind:value={subtaskStartAt} aria-label="子任务开始时间" />
+      </label>
+      <label>
+        <span>结束时间</span>
+        <input type="datetime-local" bind:value={subtaskDueAt} aria-label="子任务结束时间" />
+      </label>
+    </div>
     <label>
       <span>评论</span>
       <textarea bind:value={subtaskComment} rows="3" placeholder="添加创建说明或评论（可选）" aria-label="子任务评论"></textarea>
@@ -653,6 +667,8 @@
   .side-card select { width: 100%; }
   .side-card .secondary-button, .side-card .danger-button { border: 0; }
   .due-input { min-width: 0; }
+  .details-save-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); background: var(--color-surface-sunken); color: var(--color-text-muted); font-size: 12px; }
+  .details-save-bar button { border: 0; white-space: nowrap; }
   .error-message { color: var(--color-danger); font-size: 13px; }
   .state-box { display: grid; place-items: center; gap: 12px; min-height: 220px; }
   .error-state { color: var(--color-danger); }
@@ -662,6 +678,7 @@
   @media (max-width: 560px) {
     .subtask-list > a { grid-template-columns: 1fr; gap: 5px; }
     .subtask-form-row { grid-template-columns: 1fr; }
+    .details-save-bar { align-items: stretch; flex-direction: column; }
     .comment-actions { justify-content: stretch; }
     .comment-actions button { flex: 1; }
   }

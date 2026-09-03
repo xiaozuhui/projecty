@@ -26,6 +26,7 @@
   let priority = $state('medium');
   let assigneeId = $state<string | null>(null);
   let reviewerId = $state<string | null>(null);
+  let startAt = $state('');
   let dueAt = $state('');
   let createStatusId = $state('');
   let statusFilter = $state('');
@@ -108,12 +109,14 @@
         status_id: createStatusId || undefined,
         assignee_id: assigneeId,
         reviewer_id: reviewerId,
+        start_at: startAt ? new Date(startAt).toISOString() : undefined,
         due_at: dueAt ? new Date(dueAt).toISOString() : undefined
       });
       title = '';
       description = '';
       assigneeId = null;
       reviewerId = null;
+      startAt = '';
       dueAt = '';
       showCreate = false;
       await load(1);
@@ -209,6 +212,7 @@
       </select>
       <MemberPicker value={assigneeId} {members} onchange={(value) => (assigneeId = value)} ariaLabel="负责人" />
       <MemberPicker value={reviewerId} {members} onchange={(value) => (reviewerId = value)} ariaLabel="评审人" />
+      <input class="field-due" type="datetime-local" bind:value={startAt} aria-label="开始时间" />
       <input class="field-due" type="datetime-local" bind:value={dueAt} aria-label="截止时间" />
       <input class="field-desc" bind:value={description} placeholder="补充描述（可选）" aria-label="任务描述" />
       <button class="primary-button" type="submit" disabled={submitting}>
@@ -366,7 +370,7 @@
 
   .create-task {
     display: grid;
-    grid-template-columns: minmax(180px, 1.6fr) 110px 140px minmax(150px, 1fr) minmax(150px, 1fr) 140px minmax(180px, 1.4fr) auto;
+    grid-template-columns: minmax(180px, 1.6fr) 110px 140px minmax(150px, 1fr) minmax(150px, 1fr) 140px 140px minmax(180px, 1.4fr) auto;
     gap: 8px;
     margin-bottom: 14px;
     padding: 12px;

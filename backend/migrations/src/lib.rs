@@ -10,6 +10,7 @@ mod m20260831_000006_task_attachments;
 mod m20260831_000007_task_position;
 mod m20260901_000008_task_reviewer;
 mod m20260902_000009_user_email;
+mod m20260903_000010_task_start_at;
 
 pub struct Migrator;
 
@@ -26,6 +27,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260831_000007_task_position::Migration),
             Box::new(m20260901_000008_task_reviewer::Migration),
             Box::new(m20260902_000009_user_email::Migration),
+            Box::new(m20260903_000010_task_start_at::Migration),
         ]
     }
 }
