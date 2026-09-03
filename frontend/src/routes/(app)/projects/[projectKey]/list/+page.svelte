@@ -3,13 +3,15 @@
   import PageHeader from '$lib/components/PageHeader.svelte';
   import { ApiClientError } from '$lib/api/client';
   import { listProjectMembers, listStatuses } from '$lib/api/projects';
-  import { createTask, deleteTask, listTasks } from '$lib/api/tasks';
-  import type { ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
+  import { listMilestones } from '$lib/api/milestones';
+  import { createTask, deleteTask, listLabels, listTasks } from '$lib/api/tasks';
+  import type { LabelView, Milestone, ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
   import { meStore } from '$lib/features/auth/me.svelte';
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
   import TaskTypePill from '$lib/components/TaskTypePill.svelte';
+  import LabelPill from '$lib/components/LabelPill.svelte';
   import { taskTypeOptions } from '$lib/features/task-types';
 
   const projectKey = $derived(String(page.params.projectKey ?? ''));
@@ -18,6 +20,8 @@
   let rootTasks = $state<TaskView[]>([]);
   let statuses = $state<ProjectStatus[]>([]);
   let members = $state<ProjectMember[]>([]);
+  let labels = $state<LabelView[]>([]);
+  let milestones = $state<Milestone[]>([]);
   let currentPage = $state(1);
   let hasMore = $state(false);
   let loading = $state(true);
@@ -35,6 +39,12 @@
   let statusFilter = $state('');
   let parentFilter = $state('');
   let taskTypeFilter = $state('');
+  let keywordFilter = $state('');
+  let assigneeFilter = $state('');
+  let priorityFilter = $state('');
+  let milestoneFilter = $state('');
+  let labelFilter = $state('');
+  let overdueFilter = $state(false);
   let errorMessage = $state('');
   let deletingId = $state<string | null>(null);
 
@@ -59,20 +69,30 @@
     low: '低',
     none: '无'
   };
+  const isOverdue = (task: TaskView) => Boolean(task.due_at && new Date(task.due_at) < new Date());
 
   async function load(targetPage = 1) {
     loading = true;
     errorMessage = '';
     try {
-      const [taskResponse, statusResponse, rootResponse, memberResponse] = await Promise.all([
+      const [taskResponse, statusResponse, rootResponse, memberResponse, labelResponse, milestoneResponse] = await Promise.all([
         listTasks(projectKey, targetPage, 20, {
           statusId: statusFilter || undefined,
           parentTaskId: parentFilter || undefined,
-          taskType: taskTypeFilter || undefined
+          taskType: taskTypeFilter || undefined,
+          keyword: keywordFilter.trim() || undefined,
+          assigneeId: assigneeFilter && assigneeFilter !== 'none' ? assigneeFilter : undefined,
+          unassigned: assigneeFilter === 'none',
+          priority: priorityFilter || undefined,
+          milestoneId: milestoneFilter || undefined,
+          labelId: labelFilter || undefined,
+          overdue: overdueFilter
         }),
         listStatuses(projectKey),
         listTasks(projectKey, 1, 100),
-        listProjectMembers(projectKey)
+        listProjectMembers(projectKey),
+        listLabels(projectKey),
+        listMilestones(projectKey)
       ]);
       tasks = taskResponse.data.items;
       currentPage = taskResponse.data.page;
@@ -80,6 +100,8 @@
       statuses = statusResponse.data;
       rootTasks = rootResponse.data.items.filter((task) => !task.parent_task_id);
       members = memberResponse.data.items;
+      labels = labelResponse.data;
+      milestones = milestoneResponse.data.items;
       if (!createStatusId && statuses[0]) createStatusId = statuses[0].id;
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务加载失败';
@@ -96,6 +118,12 @@
     statusFilter = '';
     parentFilter = '';
     taskTypeFilter = '';
+    keywordFilter = '';
+    assigneeFilter = '';
+    priorityFilter = '';
+    milestoneFilter = '';
+    labelFilter = '';
+    overdueFilter = false;
     void load(1);
   }
 
@@ -180,12 +208,62 @@
 
   <form class="filters" onsubmit={(event) => { event.preventDefault(); applyFilters(); }}>
     <label>
+      关键词
+      <input bind:value={keywordFilter} placeholder="标题或任务编号" aria-label="按关键词筛选" />
+    </label>
+    <label>
       状态
       <select bind:value={statusFilter} aria-label="按状态筛选">
         <option value="">全部状态</option>
         {#each statuses as status}
           <option value={status.id}>{status.name}</option>
         {/each}
+      </select>
+    </label>
+    <label>
+      负责人
+      <select bind:value={assigneeFilter} aria-label="按负责人筛选">
+        <option value="">全部负责人</option>
+        <option value="none">未分配</option>
+        {#each members as member}
+          <option value={member.user_id}>{member.display_name}</option>
+        {/each}
+      </select>
+    </label>
+    <label>
+      优先级
+      <select bind:value={priorityFilter} aria-label="按优先级筛选">
+        <option value="">全部优先级</option>
+        <option value="urgent">紧急</option>
+        <option value="high">高</option>
+        <option value="medium">中</option>
+        <option value="low">低</option>
+        <option value="none">无</option>
+      </select>
+    </label>
+    <label>
+      里程碑
+      <select bind:value={milestoneFilter} aria-label="按里程碑筛选">
+        <option value="">全部里程碑</option>
+        {#each milestones as milestone}
+          <option value={milestone.id}>{milestone.name}</option>
+        {/each}
+      </select>
+    </label>
+    <label>
+      标签
+      <select bind:value={labelFilter} aria-label="按标签筛选">
+        <option value="">全部标签</option>
+        {#each labels as label}
+          <option value={label.id}>{label.name}</option>
+        {/each}
+      </select>
+    </label>
+    <label>
+      类型
+      <select bind:value={taskTypeFilter} aria-label="按类型筛选">
+        <option value="">全部类型</option>
+        {#each taskTypeOptions as option}<option value={option.value}>{option.label}</option>{/each}
       </select>
     </label>
     <label>
@@ -197,15 +275,12 @@
         {/each}
       </select>
     </label>
-    <label>
-      类型
-      <select bind:value={taskTypeFilter} aria-label="按类型筛选">
-        <option value="">全部类型</option>
-        {#each taskTypeOptions as option}<option value={option.value}>{option.label}</option>{/each}
-      </select>
+    <label class="overdue-filter">
+      <input type="checkbox" bind:checked={overdueFilter} onchange={() => applyFilters()} />
+      仅看逾期
     </label>
     <button class="secondary-button" type="submit" disabled={loading}>筛选</button>
-    <button class="link-button" type="button" onclick={clearFilters} disabled={loading || (!statusFilter && !parentFilter && !taskTypeFilter)}>
+    <button class="link-button" type="button" onclick={clearFilters} disabled={loading || (!statusFilter && !parentFilter && !taskTypeFilter && !keywordFilter && !assigneeFilter && !priorityFilter && !milestoneFilter && !labelFilter && !overdueFilter)}>
       清除筛选
     </button>
   </form>
@@ -260,7 +335,9 @@
             <th>状态</th>
             <th>类型</th>
             <th>优先级</th>
+            <th>标签</th>
             <th>负责人</th>
+            <th>截止</th>
             <th>更新时间</th>
             <th>操作</th>
           </tr>
@@ -278,7 +355,21 @@
               <td><span class="status-pill">{statusName(task.status_id)}</span></td>
               <td><TaskTypePill taskType={task.task_type} /></td>
               <td><span class={`priority priority-${task.priority}`}>{priorityName[task.priority]}</span></td>
+              <td>
+                <span class="label-cell">
+                  {#each task.labels as label (label.id)}
+                    <LabelPill name={label.name} />
+                  {/each}
+                </span>
+              </td>
               <td class="muted">{task.assignee_name ?? '未分配'}</td>
+              <td class="muted">
+                {#if task.due_at}
+                  <span class:danger={isOverdue(task)}>
+                    {new Date(task.due_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}
+                  </span>
+                {:else}—{/if}
+              </td>
               <td class="muted">
                 {new Date(task.updated_at).toLocaleString('zh-CN', {
                   month: 'numeric',
@@ -355,11 +446,36 @@
   .filters label {
     display: grid;
     gap: 6px;
-    min-width: 180px;
+    min-width: 150px;
     color: var(--color-text-muted);
     font-size: 12px;
     font-weight:500;
   }
+
+  .filters input:not([type]) {
+    min-width: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 9px 10px;
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+  }
+
+  .overdue-filter {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 6px;
+    min-width: auto !important;
+    padding-bottom: 10px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .overdue-filter input { accent-color: var(--color-primary); }
+
+  .label-cell { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+
+  .danger { color: var(--color-danger); font-weight: 500; }
 
   .filters select {
     min-width: 0;

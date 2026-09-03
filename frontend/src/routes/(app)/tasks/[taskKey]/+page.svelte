@@ -6,14 +6,16 @@
   import { ApiClientError } from '$lib/api/client';
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { listStatuses, listProjectMembers } from '$lib/api/projects';
+  import { listMilestones } from '$lib/api/milestones';
   import { deleteAttachment, listTaskAttachments, uploadTaskAttachment, attachmentUrl } from '$lib/api/attachments';
-  import { createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, listTasks, transitionTask, updateTask } from '$lib/api/tasks';
-  import type { Attachment, Comment, ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
+  import { addDependency, addTaskLabel, createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, listDependencies, listLabels, listTasks, removeDependency, removeTaskLabel, transitionTask, updateTask } from '$lib/api/tasks';
+  import type { Attachment, Comment, LabelView, Milestone, ProjectMember, ProjectStatus, TaskDependencies, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
   import { meStore } from '$lib/features/auth/me.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
   import { taskTypeOptions } from '$lib/features/task-types';
   import TaskTypePill from '$lib/components/TaskTypePill.svelte';
+  import LabelPill from '$lib/components/LabelPill.svelte';
 
   const taskKey = $derived(String(page.params.taskKey ?? ''));
   const projectKey = $derived(taskKey.replace(/-\d+$/, ''));
@@ -26,13 +28,22 @@
   let statuses = $state<ProjectStatus[]>([]);
   let members = $state<ProjectMember[]>([]);
   let rootTasks = $state<TaskView[]>([]);
+  let milestones = $state<Milestone[]>([]);
+  let labels = $state<LabelView[]>([]);
+  let dependencies = $state<TaskDependencies | null>(null);
+  let projectTasks = $state<TaskView[]>([]);
   let selectedStatus = $state('');
   let selectedStartAt = $state('');
   let selectedDueAt = $state('');
   let selectedAssigneeId = $state<string | null>(null);
   let selectedReviewerId = $state<string | null>(null);
   let selectedTaskType = $state('feature');
+  let selectedMilestoneId = $state<string | null>(null);
+  let labelInput = $state('');
+  let dependencyTarget = $state('');
   let savingDetails = $state(false);
+  let labelBusy = $state(false);
+  let dependencyBusy = $state(false);
   let attachParentId = $state('');
   let showSubtaskModal = $state(false);
   let subtaskTitle = $state('');
@@ -93,26 +104,34 @@
     try {
       const taskResponse = await getTask(taskKey);
       task = taskResponse.data;
-      const [subtaskResponse, statusResponse, commentResponse, attachmentResponse, memberResponse, projectTaskResponse] = await Promise.all([
+      const [subtaskResponse, statusResponse, commentResponse, attachmentResponse, memberResponse, projectTaskResponse, milestoneResponse, labelResponse, dependencyResponse] = await Promise.all([
         getSubtasks(taskKey),
         listStatuses(projectKey),
         listComments(taskKey),
         listTaskAttachments(taskKey),
         listProjectMembers(projectKey),
-        listTasks(projectKey, 1, 100)
+        listTasks(projectKey, 1, 100),
+        listMilestones(projectKey),
+        listLabels(projectKey),
+        listDependencies(taskKey)
       ]);
       subtasks = subtaskResponse.data;
       statuses = statusResponse.data;
       comments = commentResponse.data;
       attachments = attachmentResponse.data;
       members = memberResponse.data.items;
+      projectTasks = projectTaskResponse.data.items;
       rootTasks = projectTaskResponse.data.items.filter((item) => !item.parent_task_id);
+      milestones = milestoneResponse.data.items;
+      labels = labelResponse.data;
+      dependencies = dependencyResponse.data;
       selectedStatus = task.status_id;
       selectedStartAt = taskResponse.data.start_at ? isoToLocalInput(taskResponse.data.start_at) : '';
       selectedDueAt = taskResponse.data.due_at ? isoToLocalInput(taskResponse.data.due_at) : '';
       selectedAssigneeId = taskResponse.data.assignee_id;
       selectedReviewerId = taskResponse.data.reviewer_id;
       selectedTaskType = taskResponse.data.task_type;
+      selectedMilestoneId = taskResponse.data.milestone_id;
       attachParentId = '';
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务加载失败';
@@ -268,11 +287,13 @@
         reviewer_id: selectedReviewerId,
         task_type: selectedTaskType,
         start_at: selectedStartAt ? new Date(selectedStartAt).toISOString() : null,
-        due_at: selectedDueAt ? new Date(selectedDueAt).toISOString() : null
+        due_at: selectedDueAt ? new Date(selectedDueAt).toISOString() : null,
+        milestone_id: selectedMilestoneId
       })).data;
       task = updated;
       selectedAssigneeId = updated.assignee_id;
       selectedReviewerId = updated.reviewer_id;
+      selectedMilestoneId = updated.milestone_id;
       selectedStartAt = updated.start_at ? isoToLocalInput(updated.start_at) : '';
       selectedDueAt = updated.due_at ? isoToLocalInput(updated.due_at) : '';
     } catch (error) {
@@ -281,6 +302,75 @@
       savingDetails = false;
     }
   }
+
+  // 标签:输入回车新建,或点项目已有标签快速附上;× 移除关联。
+  async function submitLabel(event: SubmitEvent) {
+    event.preventDefault();
+    if (!task || !labelInput.trim()) return;
+    labelBusy = true;
+    errorMessage = '';
+    try {
+      const label = (await addTaskLabel(task.task_key, labelInput.trim())).data;
+      if (!task.labels.some((item) => item.id === label.id)) task.labels = [...task.labels, label];
+      if (!labels.some((item) => item.id === label.id)) labels = [...labels, label];
+      labelInput = '';
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '标签添加失败';
+    } finally {
+      labelBusy = false;
+    }
+  }
+
+  async function detachLabel(labelId: string) {
+    if (!task) return;
+    labelBusy = true;
+    try {
+      await removeTaskLabel(task.task_key, labelId);
+      task.labels = task.labels.filter((item) => item.id !== labelId);
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '标签移除失败';
+    } finally {
+      labelBusy = false;
+    }
+  }
+
+  // 依赖:选择同项目任务添加「阻塞我」关系;返回全量列表直接回填。
+  async function submitDependency(event: SubmitEvent) {
+    event.preventDefault();
+    if (!task || !dependencyTarget) return;
+    dependencyBusy = true;
+    errorMessage = '';
+    try {
+      dependencies = (await addDependency(task.task_key, dependencyTarget)).data;
+      dependencyTarget = '';
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '依赖添加失败';
+    } finally {
+      dependencyBusy = false;
+    }
+  }
+
+  async function detachDependency(dependencyId: string) {
+    if (!task) return;
+    dependencyBusy = true;
+    errorMessage = '';
+    try {
+      dependencies = (await removeDependency(task.task_key, dependencyId)).data;
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '依赖移除失败';
+    } finally {
+      dependencyBusy = false;
+    }
+  }
+
+  // 依赖候选:同项目、非自身、尚未建立「阻塞我」关系的任务。
+  const dependencyOptions = $derived.by(() => {
+    const linked = new Set((dependencies?.blocked_by ?? []).map((item) => item.task_id));
+    return projectTasks.filter((item) => item.id !== task?.id && !linked.has(item.id));
+  });
+  const blockedByIncomplete = $derived(
+    (dependencies?.blocked_by ?? []).filter((item) => !item.is_done)
+  );
 
   // 归属变更:根任务挂靠为子任务,或子任务脱离父任务转回主任务。
   async function changeParent(parentId: string | null) {
@@ -388,6 +478,15 @@
         </select></div>
         <div><span class="field-label">优先级</span><strong class="priority">{priorityName[task.priority]}</strong></div>
         <div>
+          <span class="field-label">里程碑</span>
+          <select bind:value={selectedMilestoneId} disabled={submitting || savingDetails} aria-label="关联里程碑">
+            <option value={null}>未关联</option>
+            {#each milestones as milestone (milestone.id)}
+              <option value={milestone.id}>{milestone.name}{milestone.due_date ? ` · ${milestone.due_date}` : ''}</option>
+            {/each}
+          </select>
+        </div>
+        <div>
           <span class="field-label">开始时间</span>
           <input
             class="due-input"
@@ -419,6 +518,31 @@
       <div class="description-block">
         <span class="field-label">任务描述</span>
         <p>{task.description || '暂无描述内容。'}</p>
+      </div>
+      <div class="labels-block">
+        <span class="field-label">标签</span>
+        {#if task.labels.length}
+          <div class="label-list">
+            {#each task.labels as label (label.id)}
+              <LabelPill name={label.name} onremove={labelBusy ? undefined : () => detachLabel(label.id)} />
+            {/each}
+          </div>
+        {:else}
+          <p class="empty-inline">还没有标签。</p>
+        {/if}
+        <form class="label-form" onsubmit={submitLabel}>
+          <input bind:value={labelInput} placeholder="输入标签名,回车添加" aria-label="新标签名称" disabled={labelBusy} />
+          <button class="secondary-button" type="submit" disabled={labelBusy || !labelInput.trim()}>添加</button>
+        </form>
+        {#if labels.length}
+          <div class="label-suggestions">
+            {#each labels as label (label.id)}
+              {#if !task.labels.some((item) => item.id === label.id)}
+                <button class="text-button label-suggest" type="button" disabled={labelBusy} onclick={() => { labelInput = label.name; }}>+ {label.name}</button>
+              {/if}
+            {/each}
+          </div>
+        {/if}
       </div>
       <div class="attachment-block">
         <div class="subtask-heading">
@@ -543,6 +667,56 @@
           {reparenting ? '处理中…' : '设为子任务'}
         </button>
       {/if}
+      <h2>依赖</h2>
+      {#if dependencies}
+        {#if blockedByIncomplete.length}
+          <p class="dependency-hint">还有 {blockedByIncomplete.length} 个未完成的任务阻塞当前任务。</p>
+        {/if}
+        <div class="dependency-groups">
+          <div>
+            <span class="field-label">阻塞我</span>
+            {#each dependencies.blocked_by as item (item.dependency_id)}
+              <div class="dependency-row">
+                <a href={`/tasks/${item.task_key}`} class:done={item.is_done}>
+                  <span class="task-key">{item.task_key}</span>
+                  <span class="dep-title">{item.title}</span>
+                  <span class="status-pill">{item.status_name}</span>
+                </a>
+                <button class="text-button" type="button" disabled={dependencyBusy} onclick={() => detachDependency(item.dependency_id)}>移除</button>
+              </div>
+            {:else}
+              <p class="empty-inline">无。</p>
+            {/each}
+          </div>
+          <div>
+            <span class="field-label">我阻塞</span>
+            {#each dependencies.blocks as item (item.dependency_id)}
+              <div class="dependency-row">
+                <a href={`/tasks/${item.task_key}`} class:done={item.is_done}>
+                  <span class="task-key">{item.task_key}</span>
+                  <span class="dep-title">{item.title}</span>
+                  <span class="status-pill">{item.status_name}</span>
+                </a>
+                <button class="text-button" type="button" disabled={dependencyBusy} onclick={() => detachDependency(item.dependency_id)}>移除</button>
+              </div>
+            {:else}
+              <p class="empty-inline">无。</p>
+            {/each}
+          </div>
+        </div>
+        <form class="dependency-form" onsubmit={submitDependency}>
+          <select bind:value={dependencyTarget} disabled={dependencyBusy} aria-label="选择依赖任务">
+            <option value="">选择要依赖的任务</option>
+            {#each dependencyOptions as option (option.id)}
+              <option value={option.task_key}>{option.task_key} · {option.title}</option>
+            {/each}
+          </select>
+          <button class="secondary-button" type="submit" disabled={dependencyBusy || !dependencyTarget}>
+            {dependencyBusy ? '处理中…' : '添加依赖'}
+          </button>
+        </form>
+        <p class="dependency-note">依赖仅支持同项目任务,系统会阻止自依赖与循环依赖。</p>
+      {/if}
       <h2>操作</h2>
       <p>删除采用逻辑删除，动作会写入项目操作日志。</p>
       <button class="danger-button" type="button" onclick={removeTask} disabled={deleting}>{deleting ? '删除中…' : '逻辑删除任务'}</button>
@@ -631,6 +805,23 @@
   .mono { font-family: var(--font-mono); }
   .description-block { display: grid; gap: 8px; }
   .description-block p { white-space: pre-wrap; color: var(--color-text-secondary); line-height: 1.7; }
+  .labels-block { display: grid; gap: 8px; }
+  .label-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .label-form { display: flex; gap: 8px; }
+  .label-form input { flex: 1; min-width: 0; }
+  .label-form button { border: 0; white-space: nowrap; }
+  .label-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .label-suggest { color: var(--color-primary-strong); }
+  .dependency-groups { display: grid; gap: 12px; }
+  .dependency-groups > div { display: grid; gap: 4px; }
+  .dependency-hint { color: var(--color-warning); }
+  .dependency-row { display: flex; align-items: center; gap: 8px; }
+  .dependency-row > a { display: grid; grid-template-columns: 90px minmax(0, 1fr) auto; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--color-text); text-decoration: none; font-size: 13px; }
+  .dependency-row > a:hover .dep-title { color: var(--color-primary); }
+  .dependency-row .dep-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dependency-row a.done { opacity: 0.55; }
+  .dependency-form { display: grid; gap: 8px; }
+  .dependency-note { color: var(--color-text-muted); font-size: 12px; }
   .subtask-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
   .subtask-heading h2, .side-card h2 { font-size: 18px; }
   .subtask-heading p, .side-card p { margin-top: 5px; color: var(--color-text-muted); font-size: 13px; }

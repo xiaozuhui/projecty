@@ -1,16 +1,39 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import Icon from '$lib/components/icons/Icon.svelte';
   import type { IconName } from '$lib/components/icons/Icon.svelte';
   import { logout } from '$lib/api/auth';
+  import { unreadCount } from '$lib/api/notifications';
   import { session } from '$lib/features/auth/session.svelte';
   import { initTheme, theme, toggleTheme } from '$lib/features/ui/theme.svelte';
   import type { MeResponse } from '$lib/api/types';
 
   let { children, user } = $props<{ children: import('svelte').Snippet; user: MeResponse }>();
   let loggingOut = $state(false);
+  let unread = $state(0);
+  // 未读徽标轮询:无中间件,进入页面拉一次,之后每 60 秒刷新(页面隐藏时跳过)。
+  let unreadTimer: ReturnType<typeof setInterval> | undefined;
+
+  async function refreshUnread() {
+    if (document.hidden) return;
+    try {
+      unread = (await unreadCount()).data.count;
+    } catch {
+      /* 未登录或网络抖动时静默,不打扰主界面 */
+    }
+  }
+
+  onMount(() => {
+    void refreshUnread();
+    unreadTimer = setInterval(() => void refreshUnread(), 60_000);
+    document.addEventListener('visibilitychange', refreshUnread);
+  });
+  onDestroy(() => {
+    if (unreadTimer) clearInterval(unreadTimer);
+    document.removeEventListener('visibilitychange', refreshUnread);
+  });
 
   onMount(initTheme);
 
@@ -69,6 +92,9 @@
             <a class="nav-item" href={link.href} class:active={isActive(link.href)} aria-current={isActive(link.href) ? 'page' : undefined}>
               <Icon name={link.icon} />
               <span>{link.label}</span>
+              {#if link.href === '/notifications' && unread > 0}
+                <span class="nav-badge" aria-label={`${unread} 条未读通知`}>{unread > 9 ? '9+' : unread}</span>
+              {/if}
             </a>
           {/each}
         </section>
@@ -109,6 +135,7 @@
   .nav-item:hover { color: var(--color-text); background: var(--color-hover); }
   .nav-item.active { color: var(--color-text); background: var(--color-hover); }
   .nav-item :global(svg) { flex: none; color: var(--color-text-muted); }
+  .nav-badge { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: auto; padding: 0 5px; border-radius: 999px; background: var(--color-primary); color: var(--color-text-inverted, #fff); font-size: 11px; font-weight: 600; line-height: 1; }
   .nav-item:hover :global(svg), .nav-item.active :global(svg) { color: currentColor; }
 
   .sidebar-footer { display: grid; gap: 4px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--color-border-weak); }
@@ -136,7 +163,7 @@
   @media (max-width: 1024px) {
     .sidebar { flex-basis: 64px; padding-inline: 10px; }
     .logo { justify-content: center; padding-bottom: 16px; }
-    .logo span:last-child, .nav-item span, .nav-section, .user-info, .logout-button { display: none; }
+    .logo span:last-child, .nav-item > span:not(.nav-badge), .nav-section, .user-info, .logout-button { display: none; }
     .nav-item { justify-content: center; }
     .logout-button { display: none; }
     .user-card { justify-content: center; }

@@ -9,15 +9,18 @@
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
 
-  type Scope = 'assignee' | 'reporter' | 'all';
+  type Scope = 'assignee' | 'reporter' | 'reviewer' | 'all';
 
   const scopes: { value: Scope; label: string }[] = [
     { value: 'assignee', label: '我负责的' },
     { value: 'reporter', label: '我创建的' },
+    { value: 'reviewer', label: '我评审的' },
     { value: 'all', label: '全部' }
   ];
 
   let scope = $state<Scope>('assignee');
+  let keyword = $state('');
+  let overdueOnly = $state(false);
   let items = $state<TaskListItem[]>([]);
   let page = $state(1);
   let hasMore = $state(false);
@@ -25,6 +28,8 @@
   let appending = $state(false);
   let errorMessage = $state('');
   let deletingId = $state<string | null>(null);
+
+  const isOverdue = (task: TaskListItem) => Boolean(task.due_at && new Date(task.due_at) < new Date());
 
   const groups = $derived.by(() => {
     const map = new Map<string, { projectKey: string; projectName: string; tasks: TaskListItem[] }>();
@@ -47,7 +52,10 @@
       errorMessage = '';
     }
     try {
-      const response = await listMyTasks(scope, targetPage);
+      const response = await listMyTasks(scope, targetPage, 30, {
+        keyword: keyword.trim() || undefined,
+        overdue: overdueOnly
+      });
       items = append ? [...items, ...response.data.items] : response.data.items;
       page = response.data.page;
       hasMore = response.data.has_more;
@@ -62,6 +70,18 @@
   function switchScope(next: Scope) {
     if (next === scope) return;
     scope = next;
+    items = [];
+    void load(1);
+  }
+
+  function applySearch(event: SubmitEvent) {
+    event.preventDefault();
+    items = [];
+    void load(1);
+  }
+
+  function toggleOverdue() {
+    overdueOnly = !overdueOnly;
     items = [];
     void load(1);
   }
@@ -111,6 +131,19 @@
       {item.label}
     </button>
   {/each}
+  <form class="scope-tools" onsubmit={applySearch}>
+    <input
+      class="search-input"
+      bind:value={keyword}
+      placeholder="搜索任务标题或编号"
+      aria-label="搜索任务"
+    />
+    <button class="secondary-button" type="submit" disabled={loading}>搜索</button>
+    <label class="overdue-toggle">
+      <input type="checkbox" checked={overdueOnly} onchange={toggleOverdue} />
+      仅看逾期
+    </label>
+  </form>
 </div>
 
 {#if errorMessage}
@@ -147,6 +180,13 @@
               <span class="assignee">
                 {#if task.assignee_name}<Avatar name={task.assignee_name} size={18} />{task.assignee_name}{:else}未分配{/if}
               </span>
+              {#if task.due_at}
+                <span class="due" class:danger={isOverdue(task)}>
+                  {new Date(task.due_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} 截止
+                </span>
+              {:else}
+                <span class="due"></span>
+              {/if}
               <time>{new Date(task.updated_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</time>
             </a>
             <button
@@ -174,10 +214,25 @@
 <style>
   .scope-tabs {
     display: flex;
+    align-items: center;
     gap: 18px;
     margin-bottom: 18px;
     border-bottom: 1px solid var(--color-border);
   }
+  .scope-tools { display: flex; align-items: center; gap: 10px; margin-left: auto; padding-bottom: 8px; }
+  .search-input {
+    width: 220px;
+    padding: 7px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: 13px;
+  }
+  .search-input:focus-visible { outline: none; box-shadow: var(--color-focus-ring); }
+  .scope-tools .secondary-button { padding: 7px 12px; font-size: 12px; }
+  .overdue-toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-muted); font-size: 12px; cursor: pointer; user-select: none; }
+  .overdue-toggle input { accent-color: var(--color-primary); }
   .scope-tab {
     padding: 8px 2px 10px;
     border: 0;
@@ -231,7 +286,7 @@
   .task-row:hover { background: var(--color-hover); }
   .task-main {
     display: grid;
-    grid-template-columns: 110px minmax(0, 1fr) auto auto minmax(90px, auto) auto;
+    grid-template-columns: 110px minmax(0, 1fr) auto auto minmax(90px, auto) minmax(70px, auto) auto;
     align-items: center;
     gap: 14px;
     flex: 1;
@@ -239,6 +294,8 @@
     color: var(--color-text);
     text-decoration: none;
   }
+  .due { color: var(--color-text-muted); font-size: 12px; white-space: nowrap; }
+  .due.danger { color: var(--color-danger); font-weight: 500; }
   .row-delete {
     flex: none;
     border: 0;
@@ -267,9 +324,13 @@
 
   .pager { display: flex; justify-content: center; padding: 6px 0 14px; }
 
+  @media (max-width: 900px) {
+    .scope-tabs { flex-wrap: wrap; row-gap: 10px; }
+    .scope-tools { margin-left: 0; width: 100%; }
+  }
   @media (max-width: 760px) {
     .task-main { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
-    .task-main :global(.priority-pill), .assignee { display: none; }
+    .task-main :global(.priority-pill), .assignee, .due { display: none; }
     .row-delete { opacity: 1; }
   }
 </style>
