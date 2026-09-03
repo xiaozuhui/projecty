@@ -1,8 +1,9 @@
 <script lang="ts">
   import { ApiClientError } from '$lib/api/client';
   import { listProjectMembers, listStatuses } from '$lib/api/projects';
+  import { listMilestones } from '$lib/api/milestones';
   import { createTask, listTasks, moveTask } from '$lib/api/tasks';
-  import type { ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
+  import type { Milestone, ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
   import { meStore } from '$lib/features/auth/me.svelte';
   import BoardColumn from './BoardColumn.svelte';
 
@@ -15,10 +16,34 @@
   let statuses = $state<ProjectStatus[]>([]);
   let tasks = $state<TaskView[]>([]);
   let members = $state<ProjectMember[]>([]);
+  let milestones = $state<Milestone[]>([]);
   let loading = $state(true);
   let errorMessage = $state('');
   let draggingId = $state<string | null>(null);
   let dropTarget = $state<{ statusId: string; index: number } | null>(null);
+  let groupMode = $state<'none' | 'assignee' | 'label' | 'milestone'>('none');
+
+  const groupOptions: { value: 'none' | 'assignee' | 'label' | 'milestone'; label: string }[] = [
+    { value: 'none', label: '不分组' },
+    { value: 'assignee', label: '按负责人' },
+    { value: 'label', label: '按标签' },
+    { value: 'milestone', label: '按里程碑' }
+  ];
+
+  // 泳道分组:标签取首个,无值任务归「未分组」。
+  const groupOf = $derived.by<((task: TaskView) => string) | null>(() => {
+    switch (groupMode) {
+      case 'assignee':
+        return (task) => task.assignee_name ?? '未分配';
+      case 'label':
+        return (task) => task.labels[0]?.name ?? '未分组';
+      case 'milestone':
+        return (task) =>
+          milestones.find((milestone) => milestone.id === task.milestone_id)?.name ?? '未关联里程碑';
+      default:
+        return null;
+    }
+  });
 
   // 流转豁免与后端一致:超管/项目管理员不受负责人、评审人限制。
   const exempt = $derived.by(() => {
@@ -31,6 +56,24 @@
     [...tasks.filter((task) => task.status_id === statusId)]
       .sort((left, right) => left.position - right.position || left.task_number - right.task_number);
 
+  // 列内卡片 id 的视觉顺序:分组时按泳道重排(与 BoardColumn 的渲染顺序一致),
+  // 拖拽落点换算必须用它,否则分组模式下插错位置。
+  const visualColumnIds = (statusId: string) => {
+    const list = ordered(statusId);
+    if (!groupOf) return list.map((task) => task.id);
+    const order: string[] = [];
+    const buckets = new Map<string, TaskView[]>();
+    for (const task of list) {
+      const group = groupOf(task);
+      if (!buckets.has(group)) {
+        buckets.set(group, []);
+        order.push(group);
+      }
+      buckets.get(group)!.push(task);
+    }
+    return order.flatMap((group) => buckets.get(group)!.map((task) => task.id));
+  };
+
   // 子任务卡片需要显示父任务 Key,从当前列视图里反查。
   const parentKeyOf = (task: TaskView) =>
     task.parent_task_id ? (tasks.find((item) => item.id === task.parent_task_id)?.task_key ?? null) : null;
@@ -39,14 +82,16 @@
     loading = true;
     errorMessage = '';
     try {
-      const [statusResponse, taskResponse, memberResponse] = await Promise.all([
+      const [statusResponse, taskResponse, memberResponse, milestoneResponse] = await Promise.all([
         listStatuses(projectKey),
         listTasks(projectKey, 1, 100),
-        listProjectMembers(projectKey)
+        listProjectMembers(projectKey),
+        listMilestones(projectKey)
       ]);
       statuses = statusResponse.data;
       tasks = taskResponse.data.items;
       members = memberResponse.data.items;
+      milestones = milestoneResponse.data.items;
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '看板加载失败';
     } finally {
@@ -74,7 +119,7 @@
     if (!taskId) return;
     const task = tasks.find((item) => item.id === taskId);
     if (!task) return;
-    const columnIds = ordered(statusId).map((item) => item.id);
+    const columnIds = visualColumnIds(statusId);
     let index = renderedIndex;
     if (task.status_id === statusId) {
       const dragIndex = columnIds.indexOf(taskId);
@@ -131,6 +176,16 @@
 {:else}
   {#if errorMessage}<div class="board-error" role="alert">{errorMessage}</div>{/if}
   {#if statuses.length}
+    <div class="board-toolbar">
+      <label>
+        泳道分组
+        <select bind:value={groupMode} aria-label="看板分组方式">
+          {#each groupOptions as option}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
     <section class="board-columns">
       {#each statuses as status (status.id)}
         <BoardColumn
@@ -138,6 +193,7 @@
           tasks={ordered(status.id)}
           {dropTarget}
           {draggingId}
+          {groupOf}
           candrag={canDrag}
           canquickadd={canQuickAdd(status)}
           ondragcardstart={dragCardStart}
@@ -162,6 +218,27 @@
     overflow-x: auto;
     padding-bottom: 8px;
     align-items: flex-start;
+  }
+  .board-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 12px;
+  }
+  .board-toolbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .board-toolbar select {
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: 13px;
   }
   .board-error {
     margin-bottom: 12px;

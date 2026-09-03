@@ -1,11 +1,12 @@
 <script lang="ts">
   import { page } from '$app/state';
   import PageHeader from '$lib/components/PageHeader.svelte';
+  import Modal from '$lib/components/Modal.svelte';
   import { ApiClientError } from '$lib/api/client';
   import { listProjectMembers, listStatuses } from '$lib/api/projects';
   import { listMilestones } from '$lib/api/milestones';
-  import { createTask, deleteTask, listLabels, listTasks } from '$lib/api/tasks';
-  import type { LabelView, Milestone, ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
+  import { createTask, deleteTask, downloadTaskExport, listDeletedTasks, listLabels, listTasks, restoreTask } from '$lib/api/tasks';
+  import type { DeletedTaskItem, LabelView, Milestone, ProjectMember, ProjectStatus, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
   import { meStore } from '$lib/features/auth/me.svelte';
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
@@ -47,6 +48,66 @@
   let overdueFilter = $state(false);
   let errorMessage = $state('');
   let deletingId = $state<string | null>(null);
+  let recycleOpen = $state(false);
+  let recycledTasks = $state<DeletedTaskItem[]>([]);
+  let recycleLoading = $state(false);
+  let restoringKey = $state<string | null>(null);
+  let exporting = $state(false);
+
+  async function openRecycle() {
+    recycleOpen = true;
+    recycleLoading = true;
+    try {
+      recycledTasks = (await listDeletedTasks(projectKey)).data.items;
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '回收站加载失败';
+    } finally {
+      recycleLoading = false;
+    }
+  }
+
+  async function restoreFromRecycle(item: DeletedTaskItem) {
+    restoringKey = item.task_key;
+    errorMessage = '';
+    try {
+      await restoreTask(item.task_key);
+      recycledTasks = recycledTasks.filter((row) => row.id !== item.id);
+      await load(1);
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '任务恢复失败';
+    } finally {
+      restoringKey = null;
+    }
+  }
+
+  async function exportCsv() {
+    exporting = true;
+    errorMessage = '';
+    try {
+      const blob = await downloadTaskExport(projectKey, {
+        statusId: statusFilter || undefined,
+        parentTaskId: parentFilter || undefined,
+        taskType: taskTypeFilter || undefined,
+        keyword: keywordFilter.trim() || undefined,
+        assigneeId: assigneeFilter && assigneeFilter !== 'none' ? assigneeFilter : undefined,
+        unassigned: assigneeFilter === 'none',
+        priority: priorityFilter || undefined,
+        milestoneId: milestoneFilter || undefined,
+        labelId: labelFilter || undefined,
+        overdue: overdueFilter
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${projectKey}-tasks.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '导出失败';
+    } finally {
+      exporting = false;
+    }
+  }
 
   const statusName = (id: string) => statuses.find((status) => status.id === id)?.name || id.slice(0, 8);
   // 与后端一致:超管/项目管理员豁免流转限制,可把任务直接建在完成列,普通成员下拉不出现该选项。
@@ -201,9 +262,15 @@
       <h2>全部任务</h2>
       <p>当前显示第 {currentPage} 页</p>
     </div>
-    <button class="primary-button" type="button" onclick={() => (showCreate = !showCreate)}>
-      {showCreate ? '收起表单' : '新建任务'}
-    </button>
+    <div class="toolbar-actions">
+      <button class="secondary-button" type="button" onclick={exportCsv} disabled={exporting}>
+        {exporting ? '导出中…' : '导出 CSV'}
+      </button>
+      <button class="secondary-button" type="button" onclick={openRecycle}>回收站</button>
+      <button class="primary-button" type="button" onclick={() => (showCreate = !showCreate)}>
+        {showCreate ? '收起表单' : '新建任务'}
+      </button>
+    </div>
   </div>
 
   <form class="filters" onsubmit={(event) => { event.preventDefault(); applyFilters(); }}>
@@ -405,6 +472,39 @@
   </div>
 </section>
 
+<Modal open={recycleOpen} title="回收站" onClose={() => (recycleOpen = false)}>
+  {#if recycleLoading}
+    <p class="recycle-hint">正在加载已删除任务…</p>
+  {:else if !recycledTasks.length}
+    <p class="recycle-hint">回收站是空的,逻辑删除的任务会在这里保留以便恢复。</p>
+  {:else}
+    <p class="recycle-hint">恢复后任务回到原状态列;最多展示最近 200 条。</p>
+    <div class="recycle-list">
+      {#each recycledTasks as item (item.id)}
+        <div class="recycle-row">
+          <div class="recycle-main">
+            <strong>{item.task_key}</strong>
+            <span title={item.title}>{item.title}</span>
+            <small>
+              {item.deleted_at ? new Date(item.deleted_at).toLocaleString('zh-CN') : ''}
+              {item.deleted_by_name ? ` · 由 ${item.deleted_by_name} 删除` : ''}
+              {item.delete_reason ? ` · 原因:${item.delete_reason}` : ''}
+            </small>
+          </div>
+          <button
+            class="text-button recycle-restore"
+            type="button"
+            disabled={restoringKey === item.task_key}
+            onclick={() => restoreFromRecycle(item)}
+          >
+            {restoringKey === item.task_key ? '恢复中…' : '恢复'}
+          </button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+</Modal>
+
 <style>
   h2,
   p {
@@ -433,6 +533,17 @@
   .create-task button {
     border: 0;
   }
+
+  .toolbar-actions { display: flex; gap: 8px; }
+
+  .recycle-hint { margin: 0 0 10px; color: var(--color-text-muted); font-size: 12px; }
+  .recycle-list { display: grid; }
+  .recycle-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--color-border-weak); }
+  .recycle-main { display: grid; gap: 3px; flex: 1; min-width: 0; font-size: 13px; }
+  .recycle-main strong { font-family: var(--font-mono); font-size: 12px; color: var(--color-primary-strong); font-weight: 500; }
+  .recycle-main span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recycle-main small { color: var(--color-text-muted); font-size: 11px; }
+  .recycle-restore { color: var(--color-primary-strong); white-space: nowrap; }
 
   .filters {
     display: flex;

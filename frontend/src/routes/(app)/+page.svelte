@@ -13,6 +13,7 @@
   let reviewingTotal = $state(0);
   let createdTotal = $state(0);
   let overdueTotal = $state(0);
+  let dueSoonTotal = $state(0);
   let loading = $state(true);
   let errorMessage = $state('');
 
@@ -22,12 +23,13 @@
 
   onMount(async () => {
     try {
-      const [projectResponse, assignedResponse, reviewingResponse, createdResponse, overdueResponse] = await Promise.all([
+      const [projectResponse, assignedResponse, reviewingResponse, createdResponse, overdueResponse, dueSoonResponse] = await Promise.all([
         listProjects(1, 6),
         listMyTasks('assignee', 1, 10),
         listMyTasks('reviewer', 1, 10),
         listMyTasks('reporter', 1, 1),
-        listMyTasks('assignee', 1, 1, { overdue: true })
+        listMyTasks('assignee', 1, 1, { overdue: true }),
+        listMyTasks('assignee', 1, 1, { dueSoon: true })
       ]);
       projects = projectResponse.data.items;
       assigned = assignedResponse.data.items;
@@ -36,6 +38,7 @@
       reviewingTotal = reviewingResponse.data.total;
       createdTotal = createdResponse.data.total;
       overdueTotal = overdueResponse.data.total;
+      dueSoonTotal = dueSoonResponse.data.total;
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : '工作台加载失败';
     } finally {
@@ -57,6 +60,15 @@
 {:else if loading}
   <section class="workspace-card state-box">正在加载工作台…</section>
 {:else}
+  {#if overdueTotal > 0 || dueSoonTotal > 0}
+    <div class="due-banner" role="status">
+      <span>
+        {#if overdueTotal > 0}<a href="/tasks?scope=assignee&overdue=1" class="danger">已逾期 {overdueTotal} 项</a>{/if}
+        {#if overdueTotal > 0 && dueSoonTotal > 0} · {/if}
+        {#if dueSoonTotal > 0}<a href="/tasks?scope=assignee&due_soon=1">7 天内到期 {dueSoonTotal} 项</a>{/if}
+      </span>
+    </div>
+  {/if}
   <div class="dashboard-grid">
     <MetricCard label="我负责的" value={String(assignedTotal)} hint="分配给你的全部任务" />
     <MetricCard label="待我评审" value={String(reviewingTotal)} hint="等待你评审定稿" />
@@ -117,6 +129,11 @@
 {/if}
 
 <style>
+  .due-banner { display: flex; justify-content: flex-end; margin-bottom: 12px; font-size: 13px; }
+  .due-banner span { display: inline-flex; gap: 6px; align-items: center; padding: 7px 12px; border: 1px solid var(--color-warning); border-radius: var(--radius-md); background: var(--color-surface); }
+  .due-banner a { color: var(--color-warning); font-weight: 500; text-decoration: none; }
+  .due-banner a.danger { color: var(--color-danger); }
+  .due-banner a:hover { text-decoration: underline; }
   .dashboard-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
   .workbench-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
   .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 4px; }

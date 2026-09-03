@@ -2,6 +2,11 @@
   import type { ProjectStatus, TaskView } from '$lib/api/types';
   import BoardCard from './BoardCard.svelte';
 
+  /** 渲染行:泳道标题或卡片(卡片带可视顺序下标,供插入指示与落点换算)。 */
+  type Row =
+    | { kind: 'lane'; name: string; count: number }
+    | { kind: 'task'; task: TaskView; index: number };
+
   interface Props {
     status: ProjectStatus;
     tasks: TaskView[];
@@ -20,6 +25,8 @@
     candrag: (task: TaskView) => boolean;
     /** 该列是否允许快捷新建:完成列仅项目管理员。 */
     canquickadd: boolean;
+    /** 泳道分组函数,null 表示不分组。 */
+    groupOf?: ((task: TaskView) => string) | null;
   }
 
   let {
@@ -35,7 +42,8 @@
     onquickadd,
     parentKeyOf,
     candrag,
-    canquickadd
+    canquickadd,
+    groupOf = null
   }: Props = $props();
 
   let body = $state<HTMLDivElement | null>(null);
@@ -45,6 +53,34 @@
 
   const active = $derived(dropTarget?.statusId === status.id);
   const indicatorIndex = $derived(dropTarget?.statusId === status.id ? dropTarget.index : -1);
+
+  // 分组时按组首次出现顺序排列,组内保持原顺序;平铺为渲染行,卡片携带可视下标。
+  const rows = $derived.by(() => {
+    if (!groupOf) {
+      return tasks.map((task, index) => ({ kind: 'task', task, index }) as Row);
+    }
+    const order: string[] = [];
+    const buckets = new Map<string, TaskView[]>();
+    for (const task of tasks) {
+      const name = groupOf(task);
+      if (!buckets.has(name)) {
+        buckets.set(name, []);
+        order.push(name);
+      }
+      buckets.get(name)!.push(task);
+    }
+    const result: Row[] = [];
+    let index = 0;
+    for (const name of order) {
+      const bucket = buckets.get(name)!;
+      result.push({ kind: 'lane', name, count: bucket.length });
+      for (const task of bucket) {
+        result.push({ kind: 'task', task, index });
+        index += 1;
+      }
+    }
+    return result;
+  });
 
   // 插入下标按卡片中点划分:指针在卡片上半区则插到其前,越过最后一张则落尾。
   function insertionIndex(event: DragEvent): number {
@@ -92,16 +128,20 @@
     <span class="count">{tasks.length}</span>
   </header>
   <div class="column-body" role="list" bind:this={body} ondragover={dragOver} ondragleave={dragLeave} ondrop={drop}>
-    {#each tasks as task, index}
-      {#if active && index === indicatorIndex}<div class="drop-indicator" aria-hidden="true"></div>{/if}
-      <BoardCard
-        {task}
-        parentKey={parentKeyOf(task)}
-        dragging={draggingId === task.id}
-        draggable={candrag(task)}
-        ondragstart={ondragcardstart}
-        ondragend={ondragcardend}
-      />
+    {#each rows as row}
+      {#if row.kind === 'lane'}
+        <div class="lane-head"><span>{row.name}</span><small>{row.count}</small></div>
+      {:else}
+        {#if active && row.index === indicatorIndex}<div class="drop-indicator" aria-hidden="true"></div>{/if}
+        <BoardCard
+          task={row.task}
+          parentKey={parentKeyOf(row.task)}
+          dragging={draggingId === row.task.id}
+          draggable={candrag(row.task)}
+          ondragstart={ondragcardstart}
+          ondragend={ondragcardend}
+        />
+      {/if}
     {/each}
     {#if active && tasks.length === indicatorIndex}<div class="drop-indicator" aria-hidden="true"></div>{/if}
     {#if !tasks.length && !active}<div class="empty-column">拖拽卡片到这里</div>{/if}
@@ -145,6 +185,18 @@
   header small { color: var(--color-text-muted); font-size: 11px; }
   .count { padding: 1px 8px; border-radius: var(--radius-sm); background: var(--color-hover); color: var(--color-text-muted); font-size: 12px; }
   .column-body { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 60px; }
+  .lane-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--color-hover);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .lane-head small { color: var(--color-text-muted); font-size: 11px; }
   .drop-indicator { height: 2px; border-radius: 1px; background: var(--color-primary); margin: -1px 0; }
   .empty-column { padding: 20px 8px; color: var(--color-text-muted); font-size: 12px; text-align: center; border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); }
   .quick-add { margin-top: 8px; }

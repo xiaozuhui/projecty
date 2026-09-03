@@ -1,5 +1,5 @@
-import { apiGet, apiPatch, apiPost } from './client';
-import type { Comment, CrossProjectTaskListResponse, LabelView, TaskDependencies, TaskListResponse, TaskView } from './types';
+import { apiDownload, apiGet, apiPatch, apiPost } from './client';
+import type { Comment, CrossProjectTaskListResponse, DeletedTaskListResponse, LabelView, ProjectDependencyListResponse, TaskDependencies, TaskListResponse, TaskView } from './types';
 const key = (value: string) => encodeURIComponent(value);
 export type TaskFilters = {
   statusId?: string;
@@ -12,9 +12,10 @@ export type TaskFilters = {
   milestoneId?: string;
   labelId?: string;
   overdue?: boolean;
+  dueSoon?: boolean;
 };
-export function listTasks(projectKey: string, page = 1, pageSize = 20, filters: TaskFilters = {}) {
-  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+function filterParams(filters: TaskFilters) {
+  const params = new URLSearchParams();
   if (filters.statusId) params.set('status_id', filters.statusId);
   if (filters.parentTaskId) params.set('parent_task_id', filters.parentTaskId);
   if (filters.taskType) params.set('task_type', filters.taskType);
@@ -25,6 +26,13 @@ export function listTasks(projectKey: string, page = 1, pageSize = 20, filters: 
   if (filters.milestoneId) params.set('milestone_id', filters.milestoneId);
   if (filters.labelId) params.set('label_id', filters.labelId);
   if (filters.overdue) params.set('overdue', 'true');
+  if (filters.dueSoon) params.set('due_soon', 'true');
+  return params;
+}
+export function listTasks(projectKey: string, page = 1, pageSize = 20, filters: TaskFilters = {}) {
+  const params = filterParams(filters);
+  params.set('page', String(page));
+  params.set('page_size', String(pageSize));
   return apiGet<TaskListResponse>(`/projects/${key(projectKey)}/tasks?${params}`);
 }
 export function getTask(taskKey: string) { return apiGet<TaskView>(`/tasks/${key(taskKey)}`); }
@@ -40,10 +48,11 @@ export function createComment(taskKey: string, body: string, attachmentIds: stri
 export function deleteComment(commentId: string, reason?: string) { return apiPost<{ message: string }>(`/comments/${key(commentId)}/delete`, reason ? { reason } : {}); }
 
 export type MyTaskScope = 'assignee' | 'reporter' | 'reviewer' | 'all';
-export function listMyTasks(scope: MyTaskScope, page = 1, pageSize = 30, options: { keyword?: string; overdue?: boolean } = {}) {
+export function listMyTasks(scope: MyTaskScope, page = 1, pageSize = 30, options: { keyword?: string; overdue?: boolean; dueSoon?: boolean } = {}) {
   const params = new URLSearchParams({ scope, page: String(page), page_size: String(pageSize) });
   if (options.keyword) params.set('keyword', options.keyword);
   if (options.overdue) params.set('overdue', 'true');
+  if (options.dueSoon) params.set('due_soon', 'true');
   return apiGet<CrossProjectTaskListResponse>(`/tasks?${params}`);
 }
 
@@ -54,3 +63,13 @@ export function removeTaskLabel(taskKey: string, labelId: string) { return apiPo
 export function listDependencies(taskKey: string) { return apiGet<TaskDependencies>(`/tasks/${key(taskKey)}/dependencies`); }
 export function addDependency(taskKey: string, dependsOnTaskKey: string) { return apiPost<TaskDependencies>(`/tasks/${key(taskKey)}/dependencies`, { depends_on_task_key: dependsOnTaskKey }); }
 export function removeDependency(taskKey: string, dependencyId: string) { return apiPost<TaskDependencies>(`/tasks/${key(taskKey)}/dependencies/${key(dependencyId)}/delete`, {}); }
+export function listProjectDependencies(projectKey: string) { return apiGet<ProjectDependencyListResponse>(`/projects/${key(projectKey)}/task-dependencies`); }
+
+export function restoreTask(taskKey: string) { return apiPost<TaskView>(`/tasks/${key(taskKey)}/restore`, {}); }
+export function copyTask(taskKey: string) { return apiPost<TaskView>(`/tasks/${key(taskKey)}/copy`, {}); }
+export function listDeletedTasks(projectKey: string) { return apiGet<DeletedTaskListResponse>(`/projects/${key(projectKey)}/tasks/deleted`); }
+export function downloadTaskExport(projectKey: string, filters: TaskFilters = {}) {
+  const params = filterParams(filters);
+  const query = params.toString();
+  return apiDownload(`/projects/${key(projectKey)}/tasks/export${query ? `?${query}` : ''}`);
+}

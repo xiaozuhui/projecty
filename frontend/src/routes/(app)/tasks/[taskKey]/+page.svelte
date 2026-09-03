@@ -7,9 +7,10 @@
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { listStatuses, listProjectMembers } from '$lib/api/projects';
   import { listMilestones } from '$lib/api/milestones';
+  import { listTaskLogs } from '$lib/api/audit';
   import { deleteAttachment, listTaskAttachments, uploadTaskAttachment, attachmentUrl } from '$lib/api/attachments';
-  import { addDependency, addTaskLabel, createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, listDependencies, listLabels, listTasks, removeDependency, removeTaskLabel, transitionTask, updateTask } from '$lib/api/tasks';
-  import type { Attachment, Comment, LabelView, Milestone, ProjectMember, ProjectStatus, TaskDependencies, TaskView } from '$lib/api/types';
+  import { addDependency, addTaskLabel, copyTask, createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, listDependencies, listLabels, listTasks, removeDependency, removeTaskLabel, transitionTask, updateTask } from '$lib/api/tasks';
+  import type { Attachment, Comment, LabelView, Milestone, OperationLog, ProjectMember, ProjectStatus, TaskDependencies, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
   import { meStore } from '$lib/features/auth/me.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
@@ -32,6 +33,10 @@
   let labels = $state<LabelView[]>([]);
   let dependencies = $state<TaskDependencies | null>(null);
   let projectTasks = $state<TaskView[]>([]);
+  let changeLogs = $state<OperationLog[]>([]);
+  let changeLogsOpen = $state(false);
+  let expandedLogId = $state<string | null>(null);
+  let copying = $state(false);
   let selectedStatus = $state('');
   let selectedStartAt = $state('');
   let selectedDueAt = $state('');
@@ -104,7 +109,7 @@
     try {
       const taskResponse = await getTask(taskKey);
       task = taskResponse.data;
-      const [subtaskResponse, statusResponse, commentResponse, attachmentResponse, memberResponse, projectTaskResponse, milestoneResponse, labelResponse, dependencyResponse] = await Promise.all([
+      const [subtaskResponse, statusResponse, commentResponse, attachmentResponse, memberResponse, projectTaskResponse, milestoneResponse, labelResponse, dependencyResponse, logResponse] = await Promise.all([
         getSubtasks(taskKey),
         listStatuses(projectKey),
         listComments(taskKey),
@@ -113,7 +118,8 @@
         listTasks(projectKey, 1, 100),
         listMilestones(projectKey),
         listLabels(projectKey),
-        listDependencies(taskKey)
+        listDependencies(taskKey),
+        listTaskLogs(taskKey, 1, 20)
       ]);
       subtasks = subtaskResponse.data;
       statuses = statusResponse.data;
@@ -125,6 +131,7 @@
       milestones = milestoneResponse.data.items;
       labels = labelResponse.data;
       dependencies = dependencyResponse.data;
+      changeLogs = logResponse.data.items;
       selectedStatus = task.status_id;
       selectedStartAt = taskResponse.data.start_at ? isoToLocalInput(taskResponse.data.start_at) : '';
       selectedDueAt = taskResponse.data.due_at ? isoToLocalInput(taskResponse.data.due_at) : '';
@@ -277,6 +284,55 @@
     }
   }
 
+  // 复制任务:后端复制字段与标签,评论/附件/依赖不随行,成功后直达新任务。
+  async function duplicateTask() {
+    if (!task || copying) return;
+    copying = true;
+    errorMessage = '';
+    try {
+      const created = (await copyTask(task.task_key)).data;
+      await goto(`/tasks/${created.task_key}`);
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '任务复制失败';
+      copying = false;
+    }
+  }
+
+  // 评论正文安全渲染:先整体转义再高亮 @提及,mention 语法不引入注入面。
+  const mentionPattern = /@([^\s@,，。.、;；:：!？?()（）[\]【】"'\n]{1,80})/g;
+  function renderComment(body: string): string {
+    const escaped = body
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+    return escaped.replace(mentionPattern, '<span class="mention">@$1</span>');
+  }
+
+  // 变更记录 diff 字段的中文标签;未收录字段按原 key 显示。
+  const fieldLabels: Record<string, string> = {
+    title: '标题', description: '描述', priority: '优先级', task_type: '类型',
+    assignee_id: '负责人', reviewer_id: '评审人', start_at: '开始时间', due_at: '截止时间',
+    parent_task_id: '父任务', milestone_id: '里程碑', status_id: '状态', task_key: '任务编号',
+    label: '标签', depends_on_task_key: '依赖任务', reason: '原因', from_status_id: '原状态',
+    to_status_id: '目标状态', position: '位置', is_active: '启用状态', password: '密码',
+    file_name: '文件名', mime_type: '类型', byte_size: '大小'
+  };
+  function diffEntries(log: OperationLog): [string, unknown][] {
+    if (!log.diff || typeof log.diff !== 'object' || Array.isArray(log.diff)) return [];
+    return Object.entries(log.diff as Record<string, unknown>);
+  }
+  function renderValue(value: unknown): string {
+    if (value === null) return '未设置';
+    if (typeof value === 'string') {
+      const date = new Date(value);
+      return /^\d{4}-\d{2}-\d{2}T/.test(value) && !Number.isNaN(date.getTime())
+        ? date.toLocaleString('zh-CN')
+        : value;
+    }
+    return JSON.stringify(value);
+  }
+
   async function saveTaskDetails() {
     if (!task) return;
     savingDetails = true;
@@ -424,7 +480,7 @@
   }
 
   async function removeAttachment(item: Attachment) {
-    if (!(await confirmDialog({ title: '删除图片', message: `确定删除 ${item.file_name} 吗？`, confirmLabel: '删除', danger: true }))) return;
+    if (!(await confirmDialog({ title: '删除附件', message: `确定删除 ${item.file_name} 吗？`, confirmLabel: '删除', danger: true }))) return;
     try {
       await deleteAttachment(item.id, '用户从任务详情页删除图片');
       attachments = attachments.filter((attachment) => attachment.id !== item.id);
@@ -546,28 +602,78 @@
       </div>
       <div class="attachment-block">
         <div class="subtask-heading">
-          <div><h2>图片</h2><p>支持 PNG、JPEG、GIF、WebP，单张不超过 10MB。</p></div>
-          <span>{attachments.length} 张</span>
+          <div><h2>附件</h2><p>图片直接预览;其他文件(文档、压缩包等)以列表下载,单个不超过 10MB。</p></div>
+          <span>{attachments.length} 个</span>
         </div>
-        <div class="attachment-grid">
-          {#each attachments as item}
-            <figure>
-              <a href={attachmentUrl(item.url)} target="_blank" rel="noreferrer">
-                <img src={attachmentUrl(item.url)} alt={item.file_name} loading="lazy" />
-              </a>
-              <figcaption>
-                <span title={item.file_name}>{item.file_name}</span>
+        {#if attachments.some((item) => item.mime_type.startsWith('image/'))}
+          <div class="attachment-grid">
+            {#each attachments.filter((item) => item.mime_type.startsWith('image/')) as item (item.id)}
+              <figure>
+                <a href={attachmentUrl(item.url)} target="_blank" rel="noreferrer">
+                  <img src={attachmentUrl(item.url)} alt={item.file_name} loading="lazy" />
+                </a>
+                <figcaption>
+                  <span title={item.file_name}>{item.file_name}</span>
+                  <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
+                </figcaption>
+              </figure>
+            {/each}
+          </div>
+        {/if}
+        {#if attachments.some((item) => !item.mime_type.startsWith('image/'))}
+          <div class="file-list">
+            {#each attachments.filter((item) => !item.mime_type.startsWith('image/')) as item (item.id)}
+              <div class="file-row">
+                <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name}>
+                  <span class="file-icon" aria-hidden="true">▤</span>
+                  <span class="file-title">{item.file_name}</span>
+                  <small>{(item.byte_size / 1024).toFixed(0)} KB</small>
+                </a>
                 <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
-              </figcaption>
-            </figure>
-          {:else}
-            <div class="empty-inline">还没有上传图片。</div>
-          {/each}
-        </div>
-        <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden bind:this={taskFileInput} onchange={(event) => uploadImages(event, 'task')} />
+              </div>
+            {/each}
+          </div>
+        {/if}
+        {#if !attachments.length}
+          <div class="empty-inline">还没有上传附件。</div>
+        {/if}
+        <input type="file" multiple hidden bind:this={taskFileInput} onchange={(event) => uploadImages(event, 'task')} />
         <button class="secondary-button attach-button" type="button" disabled={uploading} onclick={() => taskFileInput?.click()}>
-          {uploading ? '上传中…' : '上传图片'}
+          {uploading ? '上传中…' : '上传附件'}
         </button>
+      </div>
+      <div class="changelog-block">
+        <div class="subtask-heading">
+          <div><h2>变更记录</h2><p>任务的创建、编辑、流转与依赖调整都会留痕,可展开查看字段明细。</p></div>
+          <button class="text-button toggle-changelog" type="button" onclick={() => (changeLogsOpen = !changeLogsOpen)}>
+            {changeLogsOpen ? '收起' : `展开(${changeLogs.length})`}
+          </button>
+        </div>
+        {#if changeLogsOpen}
+          <div class="changelog-list">
+            {#each changeLogs as log (log.id)}
+              <div class="changelog-row">
+                <button class="changelog-head" type="button" onclick={() => (expandedLogId = expandedLogId === log.id ? null : log.id)}>
+                  <time>{new Date(log.created_at).toLocaleString('zh-CN')}</time>
+                  <span>{log.summary}</span>
+                  <small>{expandedLogId === log.id ? '−' : '+'}</small>
+                </button>
+                {#if expandedLogId === log.id && diffEntries(log).length}
+                  <dl class="changelog-diff">
+                    {#each diffEntries(log) as [field, value] (field)}
+                      <div>
+                        <dt>{fieldLabels[field] ?? field}</dt>
+                        <dd>{renderValue(value)}</dd>
+                      </div>
+                    {/each}
+                  </dl>
+                {/if}
+              </div>
+            {:else}
+              <div class="empty-inline">还没有变更记录。</div>
+            {/each}
+          </div>
+        {/if}
       </div>
       <div class="subtask-heading">
         <div><h2>子任务</h2><p>子任务不能再创建子任务。</p></div>
@@ -601,7 +707,7 @@
                 <time>{new Date(comment.created_at).toLocaleString('zh-CN')}</time>
                 <button class="text-button" onclick={() => removeComment(comment)}>删除</button>
               </div>
-              <p>{comment.body}</p>
+              <p>{@html renderComment(comment.body)}</p>
               {#if comment.attachments?.length}
                 <div class="comment-images">
                   {#each comment.attachments as item}
@@ -718,7 +824,10 @@
         <p class="dependency-note">依赖仅支持同项目任务,系统会阻止自依赖与循环依赖。</p>
       {/if}
       <h2>操作</h2>
-      <p>删除采用逻辑删除，动作会写入项目操作日志。</p>
+      <p>复制会带出字段与标签，评论、附件与依赖不随行；删除采用逻辑删除，动作会写入项目操作日志。</p>
+      <button class="secondary-button" type="button" onclick={duplicateTask} disabled={copying}>
+        {copying ? '复制中…' : '复制任务'}
+      </button>
       <button class="danger-button" type="button" onclick={removeTask} disabled={deleting}>{deleting ? '删除中…' : '逻辑删除任务'}</button>
       {#if errorMessage}<p class="error-message">{errorMessage}</p>{/if}
     </aside>
@@ -853,6 +962,27 @@
   .attachment-grid figcaption { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--color-text-muted); }
   .attachment-grid figcaption span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attach-button { justify-self: start; border: 0; }
+  .file-list { display: grid; gap: 6px; }
+  .file-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); font-size: 13px; }
+  .file-name { display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--color-text); text-decoration: none; }
+  .file-name:hover .file-title { color: var(--color-primary); }
+  .file-icon { color: var(--color-text-muted); }
+  .file-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-name small { flex: none; color: var(--color-text-muted); font-size: 12px; }
+  .changelog-block { display: grid; gap: 12px; }
+  .toggle-changelog { color: var(--color-primary-strong); white-space: nowrap; }
+  .changelog-list { display: grid; border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); }
+  .changelog-row { border-bottom: 1px solid var(--color-border-weak); }
+  .changelog-row:last-child { border-bottom: 0; }
+  .changelog-head { display: grid; grid-template-columns: 140px minmax(0, 1fr) 20px; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border: 0; background: transparent; color: var(--color-text); font-size: 13px; text-align: left; cursor: pointer; }
+  .changelog-head:hover { background: var(--color-hover); }
+  .changelog-head time { color: var(--color-text-muted); font-size: 12px; }
+  .changelog-head small { color: var(--color-text-muted); }
+  .changelog-diff { display: grid; gap: 6px; margin: 0; padding: 4px 12px 12px 30px; }
+  .changelog-diff > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; font-size: 12px; }
+  .changelog-diff dt { color: var(--color-text-muted); }
+  .changelog-diff dd { margin: 0; color: var(--color-text-secondary); word-break: break-all; }
+  .comment-list p :global(.mention) { padding: 0 2px; border-radius: var(--radius-sm); background: var(--color-primary-soft); color: var(--color-primary-strong); font-weight: 500; }
   .comments { display: grid; gap: 12px; }
   .comment-list { display: grid; gap: 10px; }
   .comment-list article { padding: 12px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); }

@@ -8,6 +8,7 @@
   import type { TaskListItem } from '$lib/api/types';
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
+  import { page as appPage } from '$app/state';
 
   type Scope = 'assignee' | 'reporter' | 'reviewer' | 'all';
 
@@ -18,9 +19,15 @@
     { value: 'all', label: '全部' }
   ];
 
-  let scope = $state<Scope>('assignee');
-  let keyword = $state('');
-  let overdueOnly = $state(false);
+  // 初始化读 URL 参数:工作台横幅等入口可带参直达(?scope=&overdue=1&due_soon=1&keyword=)。
+  function initialScope(value: string | null): Scope {
+    return value === 'reporter' || value === 'all' || value === 'reviewer' ? value : 'assignee';
+  }
+
+  let scope = $state<Scope>(initialScope(appPage.url.searchParams.get('scope')));
+  let keyword = $state(appPage.url.searchParams.get('keyword') ?? '');
+  let overdueOnly = $state(appPage.url.searchParams.get('overdue') === '1');
+  let dueSoonOnly = $state(appPage.url.searchParams.get('due_soon') === '1');
   let items = $state<TaskListItem[]>([]);
   let page = $state(1);
   let hasMore = $state(false);
@@ -54,7 +61,8 @@
     try {
       const response = await listMyTasks(scope, targetPage, 30, {
         keyword: keyword.trim() || undefined,
-        overdue: overdueOnly
+        overdue: overdueOnly,
+        dueSoon: dueSoonOnly
       });
       items = append ? [...items, ...response.data.items] : response.data.items;
       page = response.data.page;
@@ -82,6 +90,14 @@
 
   function toggleOverdue() {
     overdueOnly = !overdueOnly;
+    if (overdueOnly) dueSoonOnly = false;
+    items = [];
+    void load(1);
+  }
+
+  function toggleDueSoon() {
+    dueSoonOnly = !dueSoonOnly;
+    if (dueSoonOnly) overdueOnly = false;
     items = [];
     void load(1);
   }
@@ -142,6 +158,10 @@
     <label class="overdue-toggle">
       <input type="checkbox" checked={overdueOnly} onchange={toggleOverdue} />
       仅看逾期
+    </label>
+    <label class="overdue-toggle">
+      <input type="checkbox" checked={dueSoonOnly} onchange={toggleDueSoon} />
+      7 天内到期
     </label>
   </form>
 </div>
