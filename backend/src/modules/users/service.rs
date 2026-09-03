@@ -511,7 +511,9 @@ pub async fn update_user(
     }
     active.update(&txn).await.map_err(map_unique_account)?;
 
-    if password_changed {
+    // 改密或停用都立即吊销全部 refresh token:停用账号当场失去续期能力,
+    // 仅剩手上的 access token 在其 TTL 内自然过期。
+    if password_changed || request.is_active == Some(false) {
         let tokens = jwt_refresh_tokens::Entity::find()
             .filter(jwt_refresh_tokens::Column::UserId.eq(user_id))
             .filter(jwt_refresh_tokens::Column::RevokedAt.is_null())
