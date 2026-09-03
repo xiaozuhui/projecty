@@ -12,6 +12,7 @@ pub fn api_router() -> Router<AppState> {
             .merge(modules::projects::routes::routes())
             .merge(modules::tasks::routes::routes())
             .merge(modules::milestones::routes::routes())
+            .merge(modules::notifications::routes::routes())
             .merge(modules::comments::routes::routes())
             .merge(modules::audit::routes::routes())
             .merge(modules::search::routes::routes())

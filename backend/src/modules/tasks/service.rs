@@ -1,15 +1,18 @@
 //! 任务用例：分页查询、两层子任务、逻辑删除和操作日志事务。
 
 use chrono::{DateTime, Utc};
-use projecty_entity::{operation_logs, project_members, project_statuses, projects, tasks, users};
+use projecty_entity::{
+    labels, milestones, operation_logs, project_members, project_statuses, projects,
+    task_dependencies, task_labels, tasks, users,
+};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseBackend, DatabaseConnection,
     EntityTrait, FromQueryResult, IntoActiveModel, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, Statement, TransactionTrait,
+    QuerySelect, Select, Set, Statement, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 use crate::{
@@ -19,6 +22,7 @@ use crate::{
         tasks::NewTaskParent,
     },
     http::extractors::CurrentUser,
+    modules::notifications::service as notification_service,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +50,16 @@ pub struct ListTasksQuery {
     pub status_id: Option<Uuid>,
     pub parent_task_id: Option<Uuid>,
     pub task_type: Option<String>,
+    /// 标题或任务编号模糊匹配。
+    pub keyword: Option<String>,
+    pub assignee_id: Option<Uuid>,
+    /// true=只看未分配负责人的任务。
+    pub unassigned: Option<bool>,
+    pub priority: Option<String>,
+    pub milestone_id: Option<Uuid>,
+    pub label_id: Option<Uuid>,
+    /// true=只看已逾期(截止时间已过且状态未到完成类)。
+    pub overdue: Option<bool>,
 }
 
 impl ListTasksQuery {
@@ -53,6 +67,14 @@ impl ListTasksQuery {
         let page = self.page.unwrap_or(1).max(1);
         let page_size = self.page_size.unwrap_or(30).clamp(1, 100);
         (page, page_size)
+    }
+
+    fn keyword(&self) -> Option<String> {
+        let keyword = self.keyword.as_deref()?.trim().to_owned();
+        if keyword.is_empty() {
+            return None;
+        }
+        Some(keyword.chars().take(100).collect())
     }
 }
 
@@ -68,6 +90,7 @@ pub struct CreateTaskRequest {
     pub start_at: Option<DateTime<Utc>>,
     pub due_at: Option<DateTime<Utc>>,
     pub parent_task_id: Option<Uuid>,
+    pub milestone_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +111,9 @@ pub struct UpdateTaskRequest {
     /// 变更任务归属:null=脱离父任务转为主任务,Some=挂靠到指定根任务。
     #[serde(default, deserialize_with = "double_option")]
     pub parent_task_id: Option<Option<Uuid>>,
+    /// 里程碑关联:null=解除关联,Some=挂到指定里程碑。
+    #[serde(default, deserialize_with = "double_option")]
+    pub milestone_id: Option<Option<Uuid>>,
 }
 
 /// 把 JSON null 与字段缺失区分开:缺失走 serde default 得 None(不改),null 得 Some(None)(清空)。
@@ -136,8 +162,16 @@ pub struct TaskView {
     pub reporter_id: Uuid,
     pub start_at: Option<DateTime<Utc>>,
     pub due_at: Option<DateTime<Utc>>,
+    pub milestone_id: Option<Uuid>,
+    pub labels: Vec<LabelLite>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LabelLite {
+    pub id: Uuid,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,14 +180,18 @@ pub struct TaskListResponse {
     pub page: u64,
     pub page_size: u64,
     pub has_more: bool,
+    pub total: u64,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CrossProjectTasksQuery {
-    /// assignee(默认)=我负责的,reporter=我创建的,all=可见项目全部。
+    /// assignee(默认)=我负责的,reporter=我创建的,reviewer=我评审的,all=可见项目全部。
     pub scope: Option<String>,
     pub page: Option<u64>,
     pub page_size: Option<u64>,
+    pub keyword: Option<String>,
+    /// true=只看已逾期(截止时间已过且状态未到完成类)。
+    pub overdue: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -171,9 +209,10 @@ pub struct CrossProjectTaskListResponse {
     pub page: u64,
     pub page_size: u64,
     pub has_more: bool,
+    pub total: u64,
 }
 
-/// 跨项目任务列表:可见项目集 = 直接成员 ∪ 部门授权闭包,再叠加 scope 过滤。
+/// 跨项目任务列表:可见项目集 = 直接成员 ∪ 部门授权闭包,再叠加 scope/关键词/逾期过滤。
 pub async fn list_cross_project_tasks(
     db: &DatabaseConnection,
     current_user: &CurrentUser,
@@ -183,21 +222,23 @@ pub async fn list_cross_project_tasks(
     let scope_column = match scope {
         "assignee" => Some(tasks::Column::AssigneeId),
         "reporter" => Some(tasks::Column::ReporterId),
+        "reviewer" => Some(tasks::Column::ReviewerId),
         "all" => None,
         _ => {
             return Err(TaskError::InvalidInput(
-                "scope 必须是 assignee/reporter/all".to_owned(),
+                "scope 必须是 assignee/reporter/reviewer/all".to_owned(),
             ))
         }
     };
     let page = query.page.unwrap_or(1).max(1);
     let page_size = query.page_size.unwrap_or(30).clamp(1, 100);
-    let mut statement = tasks::Entity::find()
-        .filter(tasks::Column::DeletedAt.is_null())
-        .order_by_desc(tasks::Column::UpdatedAt)
-        .order_by_desc(tasks::Column::Id)
-        .offset((page - 1) * page_size)
-        .limit(page_size + 1);
+    let keyword = query
+        .keyword
+        .as_deref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(100).collect::<String>());
+    let mut statement = tasks::Entity::find().filter(tasks::Column::DeletedAt.is_null());
     if let Some(column) = scope_column {
         statement = statement.filter(column.eq(current_user.user_id));
     }
@@ -209,21 +250,42 @@ pub async fn list_cross_project_tasks(
                 page,
                 page_size,
                 has_more: false,
+                total: 0,
             });
         }
         statement = statement.filter(tasks::Column::ProjectId.is_in(visible));
     }
-    let mut models = statement.all(db).await?;
+    if let Some(keyword) = keyword {
+        let pattern = format!("%{}%", escape_like(&keyword));
+        statement = statement.filter(
+            Condition::any()
+                .add(tasks::Column::Title.like(&pattern))
+                .add(tasks::Column::TaskKey.ilike(&pattern)),
+        );
+    }
+    if query.overdue == Some(true) {
+        statement = apply_overdue_cross_project(db, statement).await?;
+    }
+    let total = statement.clone().count(db).await?;
+    let models = statement
+        .order_by_desc(tasks::Column::UpdatedAt)
+        .order_by_desc(tasks::Column::Id)
+        .offset((page - 1) * page_size)
+        .limit(page_size + 1)
+        .all(db)
+        .await?;
     let has_more = models.len() > page_size as usize;
-    models.truncate(page_size as usize);
+    let models = models.into_iter().take(page_size as usize).collect::<Vec<_>>();
     let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
     hydrate_user_names(db, &mut items).await?;
+    hydrate_task_labels(db, &mut items).await?;
     let items = hydrate_project_context(db, items).await?;
     Ok(CrossProjectTaskListResponse {
         items,
         page,
         page_size,
         has_more,
+        total,
     })
 }
 
@@ -306,11 +368,7 @@ pub async fn list_project_tasks(
     let (page, page_size) = query.normalized();
     let mut statement = tasks::Entity::find()
         .filter(tasks::Column::ProjectId.eq(project.id))
-        .filter(tasks::Column::DeletedAt.is_null())
-        .order_by_desc(tasks::Column::CreatedAt)
-        .order_by_desc(tasks::Column::Id)
-        .offset((page - 1) * page_size)
-        .limit(page_size + 1);
+        .filter(tasks::Column::DeletedAt.is_null());
     if let Some(status_id) = query.status_id {
         statement = statement.filter(tasks::Column::StatusId.eq(status_id));
     }
@@ -321,17 +379,111 @@ pub async fn list_project_tasks(
         let task_type = normalize_task_type(Some(task_type.to_owned()))?;
         statement = statement.filter(tasks::Column::TaskType.eq(task_type));
     }
-    let mut models = statement.all(db).await?;
+    if let Some(keyword) = query.keyword() {
+        let pattern = format!("%{}%", escape_like(&keyword));
+        statement = statement.filter(
+            Condition::any()
+                .add(tasks::Column::Title.ilike(&pattern))
+                .add(tasks::Column::TaskKey.ilike(&pattern)),
+        );
+    }
+    if let Some(assignee_id) = query.assignee_id {
+        statement = statement.filter(tasks::Column::AssigneeId.eq(assignee_id));
+    }
+    if query.unassigned == Some(true) {
+        statement = statement.filter(tasks::Column::AssigneeId.is_null());
+    }
+    if let Some(priority) = query.priority.as_deref() {
+        let priority = normalize_priority(Some(priority.to_owned()))?;
+        statement = statement.filter(tasks::Column::Priority.eq(priority));
+    }
+    if let Some(milestone_id) = query.milestone_id {
+        statement = statement.filter(tasks::Column::MilestoneId.eq(milestone_id));
+    }
+    if let Some(label_id) = query.label_id {
+        statement = statement
+            .join(
+                sea_orm::sea_query::JoinType::InnerJoin,
+                task_labels::Entity::belongs_to(tasks::Entity)
+                    .from(task_labels::Column::TaskId)
+                    .to(tasks::Column::Id)
+                    .into(),
+            )
+            .filter(task_labels::Column::LabelId.eq(label_id));
+    }
+    if query.overdue == Some(true) {
+        statement = apply_overdue_filter(db, statement, project.id).await?;
+    }
+    let total = statement.clone().count(db).await?;
+    let models = statement
+        .order_by_desc(tasks::Column::CreatedAt)
+        .order_by_desc(tasks::Column::Id)
+        .offset((page - 1) * page_size)
+        .limit(page_size + 1)
+        .all(db)
+        .await?;
     let has_more = models.len() > page_size as usize;
-    models.truncate(page_size as usize);
+    let models = models.into_iter().take(page_size as usize).collect::<Vec<_>>();
     let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
     hydrate_user_names(db, &mut items).await?;
+    hydrate_task_labels(db, &mut items).await?;
     Ok(TaskListResponse {
         items,
         page,
         page_size,
         has_more,
+        total,
     })
+}
+
+/// 逾期过滤:截止时间已过,且状态未到完成类(项目内 done 状态集先查后排除)。
+async fn apply_overdue_filter(
+    db: &DatabaseConnection,
+    statement: Select<tasks::Entity>,
+    project_id: Uuid,
+) -> Result<Select<tasks::Entity>, TaskError> {
+    let done_ids = done_status_ids(db, Some(project_id)).await?;
+    let statement = statement.filter(tasks::Column::DueAt.lt(Utc::now()));
+    if done_ids.is_empty() {
+        return Ok(statement);
+    }
+    Ok(statement.filter(tasks::Column::StatusId.is_not_in(done_ids)))
+}
+
+/// 逾期过滤的跨项目版本:排除所有项目的 done 类状态。
+async fn apply_overdue_cross_project(
+    db: &DatabaseConnection,
+    statement: Select<tasks::Entity>,
+) -> Result<Select<tasks::Entity>, TaskError> {
+    let done_ids = done_status_ids(db, None).await?;
+    let statement = statement.filter(tasks::Column::DueAt.lt(Utc::now()));
+    if done_ids.is_empty() {
+        return Ok(statement);
+    }
+    Ok(statement.filter(tasks::Column::StatusId.is_not_in(done_ids)))
+}
+
+/// done 类状态 id 集;project_id 为 None 时取全部项目。
+async fn done_status_ids(
+    db: &DatabaseConnection,
+    project_id: Option<Uuid>,
+) -> Result<Vec<Uuid>, TaskError> {
+    let mut query = project_statuses::Entity::find()
+        .filter(project_statuses::Column::Category.eq("done"));
+    if let Some(project_id) = project_id {
+        query = query.filter(project_statuses::Column::ProjectId.eq(project_id));
+    }
+    Ok(query
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|status| status.id)
+        .collect())
+}
+
+/// LIKE 模式转义:百分号、下划线与反斜杠按字面匹配。
+fn escape_like(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 pub async fn detail(
@@ -343,6 +495,7 @@ pub async fn detail(
     require_read_role(db, current_user, task.project_id).await?;
     let mut view = TaskView::from(task);
     hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -425,6 +578,9 @@ async fn create_task(
             "已完成状态的任务仅项目管理员可以创建".to_owned(),
         ));
     }
+    if let Some(milestone_id) = request.milestone_id {
+        validate_milestone(&txn, project.id, milestone_id).await?;
+    }
     let task_number = next_task_number(&txn, project.id).await?;
     // 新任务追加到目标列末尾,保证列内 position 连续。
     let position = next_position_in_column(&txn, project.id, status.id).await?;
@@ -436,7 +592,7 @@ async fn create_task(
         parent_task_id: Set(parent.map(|value| value.id)),
         status_id: Set(status.id),
         position: Set(position),
-        milestone_id: Set(None),
+        milestone_id: Set(request.milestone_id),
         title: Set(title),
         description: Set(request.description),
         priority: Set(priority),
@@ -455,19 +611,46 @@ async fn create_task(
     }
     .insert(&txn)
     .await?;
+    // 分配/评审通知与任务写入同事务,失败即整体回滚。
+    let actor_name = actor_display_name(db, current_user.user_id).await?;
+    if let Some(assignee_id) = task.assignee_id {
+        notify_task_event(
+            &txn,
+            &[assignee_id],
+            current_user,
+            &actor_name,
+            &task,
+            &project.project_key,
+            notification_service::KIND_ASSIGNED,
+        )
+        .await?;
+    }
+    if let Some(reviewer_id) = task.reviewer_id {
+        notify_task_event(
+            &txn,
+            &[reviewer_id],
+            current_user,
+            &actor_name,
+            &task,
+            &project.project_key,
+            notification_service::KIND_REVIEW_REQUESTED,
+        )
+        .await?;
+    }
     write_task_log(
         &txn,
         current_user.user_id,
         &task,
         "create",
         format!("创建任务 {}", task.task_key),
-        json!({ "task_key": task.task_key, "status_id": task.status_id, "parent_task_id": task.parent_task_id }),
+        json!({ "task_key": task.task_key, "status_id": task.status_id, "parent_task_id": task.parent_task_id, "milestone_id": task.milestone_id }),
         Some(serde_json::to_value(&task)?),
     )
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(task);
     hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -555,6 +738,13 @@ pub async fn update(
             diff.insert("parent_task_id".to_owned(), json!(next_parent));
         }
     }
+    if let Some(milestone_id) = request.milestone_id {
+        if let Some(milestone_id) = milestone_id {
+            validate_milestone(db, task.project_id, milestone_id).await?;
+        }
+        active.milestone_id = Set(milestone_id);
+        diff.insert("milestone_id".to_owned(), json!(milestone_id));
+    }
     if diff.is_empty() {
         let mut view = TaskView::from(task);
         hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
@@ -563,6 +753,40 @@ pub async fn update(
     active.updated_at = Set(Utc::now());
     let txn = db.begin().await?;
     let updated = active.update(&txn).await?;
+    // 换了负责人/评审人才通知,清空与不变都不打扰。
+    let actor_name = actor_display_name(db, current_user.user_id).await?;
+    let project = projects::Entity::find_by_id(task.project_id)
+        .one(db)
+        .await?
+        .ok_or(TaskError::NotFound)?;
+    if let Some(new_assignee) = updated.assignee_id {
+        if Some(new_assignee) != task.assignee_id {
+            notify_task_event(
+                &txn,
+                &[new_assignee],
+                current_user,
+                &actor_name,
+                &updated,
+                &project.project_key,
+                notification_service::KIND_ASSIGNED,
+            )
+            .await?;
+        }
+    }
+    if let Some(new_reviewer) = updated.reviewer_id {
+        if Some(new_reviewer) != task.reviewer_id {
+            notify_task_event(
+                &txn,
+                &[new_reviewer],
+                current_user,
+                &actor_name,
+                &updated,
+                &project.project_key,
+                notification_service::KIND_REVIEW_REQUESTED,
+            )
+            .await?;
+        }
+    }
     write_task_log(
         &txn,
         current_user.user_id,
@@ -576,6 +800,7 @@ pub async fn update(
     txn.commit().await?;
     let mut view = TaskView::from(updated);
     hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -609,6 +834,7 @@ pub async fn transition(
     active.updated_at = Set(Utc::now());
     let updated = active.update(&txn).await?;
     compact_column(&txn, task.project_id, old_status_id).await?;
+    notify_status_changed(db, &txn, current_user, &task, &status.name).await?;
     write_task_log(
         &txn,
         current_user.user_id,
@@ -622,6 +848,7 @@ pub async fn transition(
     txn.commit().await?;
     let mut view = TaskView::from(updated);
     hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -681,6 +908,7 @@ pub async fn move_task(
     let updated = active.update(&txn).await?;
     if !same_column {
         compact_column(&txn, task.project_id, old_status_id).await?;
+        notify_status_changed(db, &txn, current_user, &task, &status.name).await?;
     }
     write_task_log(
         &txn,
@@ -695,6 +923,7 @@ pub async fn move_task(
     txn.commit().await?;
     let mut view = TaskView::from(updated);
     hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -765,6 +994,7 @@ pub async fn restore(
     txn.commit().await?;
     let mut view = TaskView::from(restored);
     hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -785,6 +1015,7 @@ pub async fn subtasks(
         .map(TaskView::from)
         .collect();
     hydrate_user_names(db, &mut items).await?;
+    hydrate_task_labels(db, &mut items).await?;
     Ok(items)
 }
 
@@ -1050,6 +1281,151 @@ async fn hydrate_user_names(
     Ok(())
 }
 
+/// 批量回填任务标签:先查关联行再查标签本体,两次查询组装,避免逐任务 N+1。
+async fn hydrate_task_labels(
+    db: &DatabaseConnection,
+    views: &mut [TaskView],
+) -> Result<(), TaskError> {
+    let task_ids: Vec<Uuid> = views.iter().map(|view| view.id).collect();
+    if task_ids.is_empty() {
+        return Ok(());
+    }
+    let links = task_labels::Entity::find()
+        .filter(task_labels::Column::TaskId.is_in(task_ids))
+        .all(db)
+        .await?;
+    let label_ids: HashSet<Uuid> = links.iter().map(|link| link.label_id).collect();
+    let names: HashMap<Uuid, String> = if label_ids.is_empty() {
+        HashMap::new()
+    } else {
+        labels::Entity::find()
+            .filter(labels::Column::Id.is_in(label_ids))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|label| (label.id, label.name))
+            .collect()
+    };
+    let mut by_task: HashMap<Uuid, Vec<LabelLite>> = HashMap::new();
+    for link in links {
+        if let Some(name) = names.get(&link.label_id) {
+            by_task.entry(link.task_id).or_default().push(LabelLite {
+                id: link.label_id,
+                name: name.clone(),
+            });
+        }
+    }
+    for view in views {
+        let mut attached = by_task.remove(&view.id).unwrap_or_default();
+        attached.sort_by(|a, b| a.name.cmp(&b.name));
+        view.labels = attached;
+    }
+    Ok(())
+}
+
+/// 操作者显示名,通知文案快照用。
+async fn actor_display_name(
+    db: &DatabaseConnection,
+    user_id: Uuid,
+) -> Result<String, TaskError> {
+    let user = users::Entity::find_by_id(user_id)
+        .one(db)
+        .await?
+        .ok_or(TaskError::NotFound)?;
+    Ok(user.display_name)
+}
+
+/// 事务内写一条任务事件通知,文案按类型生成快照。
+async fn notify_task_event<C>(
+    conn: &C,
+    recipient_ids: &[Uuid],
+    actor: &CurrentUser,
+    actor_name: &str,
+    task: &tasks::Model,
+    project_key: &str,
+    kind: &str,
+) -> Result<(), TaskError>
+where
+    C: ConnectionTrait + Send + Sync,
+{
+    let summary = match kind {
+        notification_service::KIND_ASSIGNED => {
+            format!("{actor_name} 将 {}「{}」分配给你", task.task_key, task.title)
+        }
+        notification_service::KIND_REVIEW_REQUESTED => {
+            format!("{actor_name} 指定你评审 {}「{}」", task.task_key, task.title)
+        }
+        _ => return Ok(()),
+    };
+    Ok(notification_service::notify(
+        conn,
+        recipient_ids,
+        actor,
+        actor_name,
+        task,
+        project_key,
+        kind,
+        summary,
+    )
+    .await?)
+}
+
+/// 状态流转通知:负责人、创建人、评审人都收到(通知服务内部去重并排除操作者)。
+async fn notify_status_changed<C>(
+    db: &DatabaseConnection,
+    conn: &C,
+    actor: &CurrentUser,
+    task: &tasks::Model,
+    status_name: &str,
+) -> Result<(), TaskError>
+where
+    C: ConnectionTrait + Send + Sync,
+{
+    let actor_name = actor_display_name(db, actor.user_id).await?;
+    let project = projects::Entity::find_by_id(task.project_id)
+        .one(db)
+        .await?
+        .ok_or(TaskError::NotFound)?;
+    let audience = notification_service::task_audience(task);
+    let summary = format!(
+        "{actor_name} 将 {}「{}」流转为 {status_name}",
+        task.task_key, task.title
+    );
+    Ok(notification_service::notify(
+        conn,
+        &audience,
+        actor,
+        &actor_name,
+        task,
+        &project.project_key,
+        notification_service::KIND_STATUS_CHANGED,
+        summary,
+    )
+    .await?)
+}
+
+/// 里程碑合法性:存在、未删除且属于当前项目。
+async fn validate_milestone<C>(
+    conn: &C,
+    project_id: Uuid,
+    milestone_id: Uuid,
+) -> Result<(), TaskError>
+where
+    C: ConnectionTrait + Send + Sync,
+{
+    let found = milestones::Entity::find_by_id(milestone_id)
+        .filter(milestones::Column::ProjectId.eq(project_id))
+        .filter(milestones::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?;
+    if found.is_none() {
+        return Err(TaskError::InvalidInput(
+            "里程碑不存在或不属于当前项目".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// 负责人/评审人合法性:存在、未停用、且按其真实系统角色可读该项目。
 async fn validate_task_user(
     db: &DatabaseConnection,
@@ -1207,8 +1583,383 @@ impl From<tasks::Model> for TaskView {
             reporter_id: value.reporter_id,
             start_at: value.start_at,
             due_at: value.due_at,
+            milestone_id: value.milestone_id,
+            labels: Vec::new(),
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
     }
+}
+
+// ---------- 标签 ----------
+
+#[derive(Debug, Deserialize)]
+pub struct AddLabelRequest {
+    pub name: String,
+}
+
+pub async fn list_project_labels(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    project_key: &str,
+) -> Result<Vec<LabelLite>, TaskError> {
+    let project = find_project(db, project_key).await?;
+    require_read_role(db, current_user, project.id).await?;
+    Ok(labels::Entity::find()
+        .filter(labels::Column::ProjectId.eq(project.id))
+        .order_by_asc(labels::Column::Name)
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|label| LabelLite {
+            id: label.id,
+            name: label.name,
+        })
+        .collect())
+}
+
+/// 打标签:项目内按名称幂等查找或创建标签,再关联任务(已关联则直接返回)。
+pub async fn add_task_label(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    task_key: &str,
+    request: AddLabelRequest,
+) -> Result<LabelLite, TaskError> {
+    let task = find_task(db, task_key, false).await?;
+    require_write_role(db, current_user, task.project_id).await?;
+    ensure_project_open_by_id(db, task.project_id).await?;
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err(TaskError::InvalidInput("标签名称不能为空".to_owned()));
+    }
+    if name.chars().count() > 40 {
+        return Err(TaskError::InvalidInput(
+            "标签名称不能超过 40 个字符".to_owned(),
+        ));
+    }
+    let name = name.to_owned();
+    let txn = db.begin().await?;
+    let label = match labels::Entity::find()
+        .filter(labels::Column::ProjectId.eq(task.project_id))
+        .filter(labels::Column::Name.eq(&name))
+        .one(&txn)
+        .await?
+    {
+        Some(label) => label,
+        None => {
+            labels::ActiveModel {
+                id: Set(Uuid::now_v7()),
+                project_id: Set(task.project_id),
+                name: Set(name.clone()),
+                created_at: Set(Utc::now()),
+            }
+            .insert(&txn)
+            .await?
+        }
+    };
+    let linked = task_labels::Entity::find_by_id((task.id, label.id))
+        .one(&txn)
+        .await?;
+    if linked.is_none() {
+        task_labels::ActiveModel {
+            task_id: Set(task.id),
+            label_id: Set(label.id),
+            created_at: Set(Utc::now()),
+        }
+        .insert(&txn)
+        .await?;
+        write_task_log(
+            &txn,
+            current_user.user_id,
+            &task,
+            "label_added",
+            format!("为任务 {} 添加标签 {name}", task.task_key),
+            json!({ "label": name }),
+            None,
+        )
+        .await?;
+    }
+    txn.commit().await?;
+    Ok(LabelLite {
+        id: label.id,
+        name: label.name,
+    })
+}
+
+/// 解除任务的标签关联;标签本体保留,其他任务仍可继续使用。
+pub async fn remove_task_label(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    task_key: &str,
+    label_id: Uuid,
+) -> Result<(), TaskError> {
+    let task = find_task(db, task_key, false).await?;
+    require_write_role(db, current_user, task.project_id).await?;
+    if task_labels::Entity::find_by_id((task.id, label_id))
+        .one(db)
+        .await?
+        .is_none()
+    {
+        return Err(TaskError::NotFound);
+    }
+    let label = labels::Entity::find_by_id(label_id)
+        .one(db)
+        .await?
+        .ok_or(TaskError::NotFound)?;
+    let txn = db.begin().await?;
+    task_labels::Entity::delete_by_id((task.id, label_id))
+        .exec(&txn)
+        .await?;
+    write_task_log(
+        &txn,
+        current_user.user_id,
+        &task,
+        "label_removed",
+        format!("移除任务 {} 的标签 {}", task.task_key, label.name),
+        json!({ "label": label.name }),
+        None,
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(())
+}
+
+// ---------- 依赖 ----------
+
+#[derive(Debug, Serialize)]
+pub struct TaskRefView {
+    pub dependency_id: Uuid,
+    pub task_id: Uuid,
+    pub task_key: String,
+    pub title: String,
+    pub status_name: String,
+    pub is_done: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskDependenciesResponse {
+    /// 阻塞当前任务的任务。
+    pub blocked_by: Vec<TaskRefView>,
+    /// 当前任务阻塞的任务。
+    pub blocks: Vec<TaskRefView>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddDependencyRequest {
+    pub depends_on_task_key: String,
+}
+
+pub async fn list_dependencies(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    task_key: &str,
+) -> Result<TaskDependenciesResponse, TaskError> {
+    let task = find_task(db, task_key, false).await?;
+    require_read_role(db, current_user, task.project_id).await?;
+    let blocked_by_rows = task_dependencies::Entity::find()
+        .filter(task_dependencies::Column::TaskId.eq(task.id))
+        .all(db)
+        .await?;
+    let blocks_rows = task_dependencies::Entity::find()
+        .filter(task_dependencies::Column::DependsOnTaskId.eq(task.id))
+        .all(db)
+        .await?;
+    let mut related_ids: Vec<Uuid> = blocked_by_rows
+        .iter()
+        .map(|row| row.depends_on_task_id)
+        .collect();
+    related_ids.extend(blocks_rows.iter().map(|row| row.task_id));
+    let related: HashMap<Uuid, tasks::Model> = if related_ids.is_empty() {
+        HashMap::new()
+    } else {
+        tasks::Entity::find()
+            .filter(tasks::Column::Id.is_in(related_ids))
+            .filter(tasks::Column::DeletedAt.is_null())
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|model| (model.id, model))
+            .collect()
+    };
+    let status_ids: HashSet<Uuid> = related.values().map(|model| model.status_id).collect();
+    let statuses: HashMap<Uuid, (String, bool)> = if status_ids.is_empty() {
+        HashMap::new()
+    } else {
+        project_statuses::Entity::find()
+            .filter(project_statuses::Column::Id.is_in(status_ids))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|status| {
+                (
+                    status.id,
+                    (status.name, status.category == "done"),
+                )
+            })
+            .collect()
+    };
+    let to_view = |dependency_id: Uuid, model: &tasks::Model| {
+        let (status_name, is_done) = statuses
+            .get(&model.status_id)
+            .cloned()
+            .unwrap_or((String::new(), false));
+        TaskRefView {
+            dependency_id,
+            task_id: model.id,
+            task_key: model.task_key.clone(),
+            title: model.title.clone(),
+            status_name,
+            is_done,
+        }
+    };
+    Ok(TaskDependenciesResponse {
+        blocked_by: blocked_by_rows
+            .iter()
+            .filter_map(|row| related.get(&row.depends_on_task_id).map(|m| to_view(row.id, m)))
+            .collect(),
+        blocks: blocks_rows
+            .iter()
+            .filter_map(|row| related.get(&row.task_id).map(|m| to_view(row.id, m)))
+            .collect(),
+    })
+}
+
+/// 新增依赖:仅同项目、禁自依赖与重复,项目内全量边内存 BFS 防环。
+pub async fn add_dependency(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    task_key: &str,
+    request: AddDependencyRequest,
+) -> Result<TaskDependenciesResponse, TaskError> {
+    let task = find_task(db, task_key, false).await?;
+    require_write_role(db, current_user, task.project_id).await?;
+    ensure_project_open_by_id(db, task.project_id).await?;
+    let depends_on = find_task(db, request.depends_on_task_key.trim(), false).await?;
+    if task.id == depends_on.id {
+        return Err(TaskError::InvalidInput("任务不能依赖自己".to_owned()));
+    }
+    if task.project_id != depends_on.project_id {
+        return Err(TaskError::InvalidInput(
+            "依赖的任务必须属于当前项目".to_owned(),
+        ));
+    }
+    let duplicate = task_dependencies::Entity::find()
+        .filter(task_dependencies::Column::TaskId.eq(task.id))
+        .filter(task_dependencies::Column::DependsOnTaskId.eq(depends_on.id))
+        .one(db)
+        .await?;
+    if duplicate.is_some() {
+        return Err(TaskError::Conflict("依赖关系已存在".to_owned()));
+    }
+    if creates_cycle(db, task.id, depends_on.id).await? {
+        return Err(TaskError::Conflict(
+            "检测到循环依赖：该任务已(间接)阻塞当前任务".to_owned(),
+        ));
+    }
+    let txn = db.begin().await?;
+    task_dependencies::ActiveModel {
+        id: Set(Uuid::now_v7()),
+        task_id: Set(task.id),
+        depends_on_task_id: Set(depends_on.id),
+        created_by: Set(current_user.user_id),
+        created_at: Set(Utc::now()),
+    }
+    .insert(&txn)
+    .await?;
+    write_task_log(
+        &txn,
+        current_user.user_id,
+        &task,
+        "dependency_added",
+        format!("为任务 {} 添加依赖 {}", task.task_key, depends_on.task_key),
+        json!({ "depends_on_task_key": depends_on.task_key }),
+        None,
+    )
+    .await?;
+    txn.commit().await?;
+    list_dependencies(db, current_user, task_key).await
+}
+
+pub async fn remove_dependency(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    task_key: &str,
+    dependency_id: Uuid,
+) -> Result<TaskDependenciesResponse, TaskError> {
+    let task = find_task(db, task_key, false).await?;
+    require_write_role(db, current_user, task.project_id).await?;
+    let dependency = task_dependencies::Entity::find_by_id(dependency_id)
+        .one(db)
+        .await?
+        .ok_or(TaskError::NotFound)?;
+    if dependency.task_id != task.id {
+        return Err(TaskError::NotFound);
+    }
+    let depends_on = tasks::Entity::find_by_id(dependency.depends_on_task_id)
+        .one(db)
+        .await?
+        .ok_or(TaskError::NotFound)?;
+    let txn = db.begin().await?;
+    task_dependencies::Entity::delete_by_id(dependency_id)
+        .exec(&txn)
+        .await?;
+    write_task_log(
+        &txn,
+        current_user.user_id,
+        &task,
+        "dependency_removed",
+        format!(
+            "移除任务 {} 对 {} 的依赖",
+            task.task_key, depends_on.task_key
+        ),
+        json!({ "depends_on_task_key": depends_on.task_key }),
+        None,
+    )
+    .await?;
+    txn.commit().await?;
+    list_dependencies(db, current_user, task_key).await
+}
+
+/// 防环:从目标依赖出发沿 depends_on 方向遍历,若能回到当前任务说明成环。
+/// 项目内全量依赖边一次拉取后在内存做 BFS,规模可控。
+async fn creates_cycle(
+    db: &DatabaseConnection,
+    task_id: Uuid,
+    depends_on_id: Uuid,
+) -> Result<bool, TaskError> {
+    #[derive(Debug, FromQueryResult)]
+    struct DependencyEdge {
+        task_id: Uuid,
+        depends_on_task_id: Uuid,
+    }
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT td.task_id, td.depends_on_task_id FROM task_dependencies td JOIN tasks t ON t.id = td.task_id WHERE t.project_id = (SELECT project_id FROM tasks WHERE id = $1)",
+        [task_id.into()],
+    );
+    let edges = DependencyEdge::find_by_statement(statement)
+        .all(db)
+        .await?;
+    let mut graph: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    for edge in edges {
+        graph
+            .entry(edge.task_id)
+            .or_default()
+            .push(edge.depends_on_task_id);
+    }
+    let mut queue: VecDeque<Uuid> = VecDeque::from([depends_on_id]);
+    let mut visited: HashSet<Uuid> = HashSet::from([depends_on_id]);
+    while let Some(current) = queue.pop_front() {
+        if current == task_id {
+            return Ok(true);
+        }
+        if let Some(next_ids) = graph.get(&current) {
+            for next in next_ids {
+                if visited.insert(*next) {
+                    queue.push_back(*next);
+                }
+            }
+        }
+    }
+    Ok(false)
 }

@@ -1,6 +1,6 @@
 //! 任务评论查询、创建和逻辑删除服务。
 use chrono::{DateTime, Utc};
-use projecty_entity::{operation_logs, task_comments, tasks, users};
+use projecty_entity::{operation_logs, projects, task_comments, tasks, users};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
     TransactionTrait,
@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{
     http::extractors::CurrentUser,
     modules::attachments::service::{self as attachment_service, AttachmentError, AttachmentView},
+    modules::notifications::service as notification_service,
     modules::tasks::service::user_can_read_project,
 };
 
@@ -111,6 +112,10 @@ pub async fn create(
         .one(db)
         .await?
         .ok_or(CommentError::NotFound)?;
+    let project = projects::Entity::find_by_id(task.project_id)
+        .one(db)
+        .await?
+        .ok_or(CommentError::NotFound)?;
     let now = Utc::now();
     let txn = db.begin().await?;
     let comment = task_comments::ActiveModel {
@@ -125,6 +130,21 @@ pub async fn create(
         delete_reason: Set(None),
     }
     .insert(&txn)
+    .await?;
+    // 评论通知负责人、创建人、评审人(通知服务内部去重并排除评论作者)。
+    notification_service::notify(
+        &txn,
+        &notification_service::task_audience(&task),
+        current_user,
+        &author.display_name,
+        &task,
+        &project.project_key,
+        notification_service::KIND_COMMENTED,
+        format!(
+            "{} 评论了 {}「{}」",
+            author.display_name, task.task_key, task.title
+        ),
+    )
     .await?;
     operation_logs::ActiveModel {
         id: Set(Uuid::now_v7()),

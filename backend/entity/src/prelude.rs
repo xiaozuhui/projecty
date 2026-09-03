@@ -1,7 +1,9 @@
 pub use crate::department_closure::Entity as DepartmentClosure;
 pub use crate::departments::Entity as Departments;
 pub use crate::jwt_refresh_tokens::Entity as JwtRefreshTokens;
+pub use crate::labels::Entity as Labels;
 pub use crate::milestones::Entity as Milestones;
+pub use crate::notifications::Entity as Notifications;
 pub use crate::operation_logs::Entity as OperationLogs;
 pub use crate::project_department_grants::Entity as ProjectDepartmentGrants;
 pub use crate::project_members::Entity as ProjectMembers;
@@ -9,6 +11,8 @@ pub use crate::project_statuses::Entity as ProjectStatuses;
 pub use crate::projects::Entity as Projects;
 pub use crate::task_attachments::Entity as TaskAttachments;
 pub use crate::task_comments::Entity as TaskComments;
+pub use crate::task_dependencies::Entity as TaskDependencies;
+pub use crate::task_labels::Entity as TaskLabels;
 pub use crate::tasks::Entity as Tasks;
 pub use crate::user_departments::Entity as UserDepartments;
 pub use crate::users::Entity as Users;

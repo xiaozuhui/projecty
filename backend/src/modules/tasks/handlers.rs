@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use uuid::Uuid;
 
 use crate::{
     http::{
@@ -9,8 +10,9 @@ use crate::{
         extractors::CurrentUser,
     },
     modules::tasks::service::{
-        self, CreateTaskRequest, CrossProjectTaskListResponse, CrossProjectTasksQuery,
-        DeleteTaskRequest, ListTasksQuery, MoveTaskRequest, TaskListResponse, TaskView,
+        self, AddDependencyRequest, AddLabelRequest, CreateTaskRequest,
+        CrossProjectTaskListResponse, CrossProjectTasksQuery, DeleteTaskRequest, LabelLite,
+        ListTasksQuery, MoveTaskRequest, TaskDependenciesResponse, TaskListResponse, TaskView,
         TransitionTaskRequest, UpdateTaskRequest,
     },
     state::AppState,
@@ -182,5 +184,74 @@ pub async fn create_subtask(
     let response = service::create_subtask(&state.db, &current_user, &task_key, request)
         .await
         .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn list_project_labels(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(project_key): Path<String>,
+) -> Result<Json<ApiEnvelope<Vec<LabelLite>>>, AppError> {
+    let response = service::list_project_labels(&state.db, &current_user, &project_key)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn add_task_label(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(task_key): Path<String>,
+    Json(request): Json<AddLabelRequest>,
+) -> Result<Json<ApiEnvelope<LabelLite>>, AppError> {
+    let response = service::add_task_label(&state.db, &current_user, &task_key, request)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn remove_task_label(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path((task_key, label_id)): Path<(String, Uuid)>,
+) -> Result<Json<ApiEnvelope<serde_json::Value>>, AppError> {
+    service::remove_task_label(&state.db, &current_user, &task_key, label_id)
+        .await
+        .map_err(map_error)?;
+    Ok(success(serde_json::json!({ "message": "标签已移除" })))
+}
+
+pub async fn list_dependencies(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(task_key): Path<String>,
+) -> Result<Json<ApiEnvelope<TaskDependenciesResponse>>, AppError> {
+    let response = service::list_dependencies(&state.db, &current_user, &task_key)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn add_dependency(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(task_key): Path<String>,
+    Json(request): Json<AddDependencyRequest>,
+) -> Result<Json<ApiEnvelope<TaskDependenciesResponse>>, AppError> {
+    let response = service::add_dependency(&state.db, &current_user, &task_key, request)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn remove_dependency(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path((task_key, dependency_id)): Path<(String, Uuid)>,
+) -> Result<Json<ApiEnvelope<TaskDependenciesResponse>>, AppError> {
+    let response =
+        service::remove_dependency(&state.db, &current_user, &task_key, dependency_id)
+            .await
+            .map_err(map_error)?;
     Ok(success(response))
 }

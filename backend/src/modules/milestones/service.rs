@@ -2,9 +2,11 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use projecty_entity::{milestones, operation_logs, project_members, project_statuses, projects};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
+    EntityTrait, FromQueryResult, PaginatorTrait, QueryFilter, QueryOrder, Set, Statement,
+    TransactionTrait,
 };
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -42,6 +44,8 @@ pub struct MilestoneView {
     pub name: String,
     pub due_date: Option<NaiveDate>,
     pub is_reached: bool,
+    pub task_total: i64,
+    pub task_done: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -142,17 +146,47 @@ pub async fn list(
     if !user_can_read_project(db, current_user, project.id).await? {
         return Err(MilestoneError::Forbidden);
     }
-    let items = milestones::Entity::find()
+    let models = milestones::Entity::find()
         .filter(milestones::Column::ProjectId.eq(project.id))
         .filter(milestones::Column::DeletedAt.is_null())
         .order_by_asc(milestones::Column::DueDate)
         .order_by_desc(milestones::Column::CreatedAt)
         .all(db)
-        .await?
+        .await?;
+    let stats = milestone_task_stats(db, project.id).await?;
+    let items = models
         .into_iter()
-        .map(Into::into)
+        .map(|model| {
+            let (task_total, task_done) = stats.get(&model.id).cloned().unwrap_or((0, 0));
+            MilestoneView::from_with_stats(model, task_total, task_done)
+        })
         .collect();
     Ok(MilestoneListResponse { items })
+}
+
+/// 里程碑关联任务统计:未删除任务按里程碑聚合,done 类状态计完成。
+/// 一条聚合 SQL,未关联任务的里程碑补 0。
+async fn milestone_task_stats(
+    db: &DatabaseConnection,
+    project_id: Uuid,
+) -> Result<HashMap<Uuid, (i64, i64)>, MilestoneError> {
+    #[derive(Debug, FromQueryResult)]
+    struct MilestoneStat {
+        milestone_id: Uuid,
+        total: i64,
+        done: i64,
+    }
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT t.milestone_id AS milestone_id, COUNT(*) AS total, COUNT(*) FILTER (WHERE ps.category = 'done') AS done FROM tasks t JOIN project_statuses ps ON ps.id = t.status_id WHERE t.project_id = $1 AND t.deleted_at IS NULL AND t.milestone_id IS NOT NULL GROUP BY t.milestone_id",
+        [project_id.into()],
+    );
+    Ok(MilestoneStat::find_by_statement(statement)
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|row| (row.milestone_id, (row.total, row.done)))
+        .collect())
 }
 
 pub async fn create(
@@ -191,7 +225,7 @@ pub async fn create(
     )
     .await?;
     txn.commit().await?;
-    Ok(model.into())
+    Ok(MilestoneView::from_with_stats(model, 0, 0))
 }
 
 pub async fn update(
@@ -222,7 +256,7 @@ pub async fn update(
         changes.insert("is_reached".to_owned(), json!(is_reached));
     }
     if changes.is_empty() {
-        return Ok(model.into());
+        return Ok(MilestoneView::from_with_stats(model, 0, 0));
     }
     active.updated_at = Set(Utc::now());
     let txn = db.begin().await?;
@@ -238,7 +272,7 @@ pub async fn update(
     )
     .await?;
     txn.commit().await?;
-    Ok(updated.into())
+    Ok(MilestoneView::from_with_stats(updated, 0, 0))
 }
 
 pub async fn delete(
@@ -361,14 +395,16 @@ impl From<project_statuses::Model> for ProjectStatusView {
         }
     }
 }
-impl From<milestones::Model> for MilestoneView {
-    fn from(v: milestones::Model) -> Self {
+impl MilestoneView {
+    fn from_with_stats(v: milestones::Model, task_total: i64, task_done: i64) -> Self {
         Self {
             id: v.id,
             project_id: v.project_id,
             name: v.name,
             due_date: v.due_date,
             is_reached: v.is_reached,
+            task_total,
+            task_done,
             created_at: v.created_at,
             updated_at: v.updated_at,
             deleted_at: v.deleted_at,
