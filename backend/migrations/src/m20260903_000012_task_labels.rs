@@ -47,22 +47,17 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(TaskLabels::Table)
                     .if_not_exists()
-                    .col(
-                        ColumnDef::new(TaskLabels::TaskId)
-                            .uuid()
-                            .not_null()
-                            .primary_key(),
-                    )
-                    .col(
-                        ColumnDef::new(TaskLabels::LabelId)
-                            .uuid()
-                            .not_null()
-                            .primary_key(),
-                    )
+                    .col(ColumnDef::new(TaskLabels::TaskId).uuid().not_null())
+                    .col(ColumnDef::new(TaskLabels::LabelId).uuid().not_null())
                     .col(
                         ColumnDef::new(TaskLabels::CreatedAt)
                             .timestamp_with_time_zone()
                             .not_null(),
+                    )
+                    .primary_key(
+                        Index::create()
+                            .col(TaskLabels::TaskId)
+                            .col(TaskLabels::LabelId),
                     )
                     .to_owned(),
             )
