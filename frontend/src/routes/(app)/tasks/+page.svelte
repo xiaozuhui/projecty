@@ -1,12 +1,11 @@
 <script lang="ts">
-  import PageHeader from '$lib/components/PageHeader.svelte';
   import Avatar from '$lib/components/Avatar.svelte';
   import PriorityPill from '$lib/components/PriorityPill.svelte';
   import TaskTypePill from '$lib/components/TaskTypePill.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
   import { ApiClientError } from '$lib/api/client';
-  import { deleteTask, listMyTasks } from '$lib/api/tasks';
+  import { listMyTasks } from '$lib/api/tasks';
   import type { TaskListItem } from '$lib/api/types';
-  import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
   import { page as appPage } from '$app/state';
 
@@ -18,8 +17,14 @@
     { value: 'reviewer', label: '我评审的' },
     { value: 'all', label: '全部' }
   ];
+  const scopeLabel: Record<Scope, string> = {
+    assignee: '我负责的',
+    reporter: '我创建的',
+    reviewer: '我评审的',
+    all: '可见项目全部'
+  };
 
-  // 初始化读 URL 参数:工作台横幅等入口可带参直达(?scope=&overdue=1&due_soon=1&keyword=)。
+  // 初始化读 URL 参数:工作台「关注」面板等入口可带参直达(?scope=&overdue=1&due_soon=1&keyword=)。
   function initialScope(value: string | null): Scope {
     return value === 'reporter' || value === 'all' || value === 'reviewer' ? value : 'assignee';
   }
@@ -29,14 +34,14 @@
   let overdueOnly = $state(appPage.url.searchParams.get('overdue') === '1');
   let dueSoonOnly = $state(appPage.url.searchParams.get('due_soon') === '1');
   let items = $state<TaskListItem[]>([]);
+  let total = $state(0);
   let page = $state(1);
   let hasMore = $state(false);
   let loading = $state(true);
   let appending = $state(false);
   let errorMessage = $state('');
-  let deletingId = $state<string | null>(null);
 
-  const isOverdue = (task: TaskListItem) => Boolean(task.due_at && new Date(task.due_at) < new Date());
+  const isOverdue = (task: TaskListItem) => Boolean(task.due_at && task.status_category !== 'done' && new Date(task.due_at) < new Date());
 
   const groups = $derived.by(() => {
     const map = new Map<string, { projectKey: string; projectName: string; tasks: TaskListItem[] }>();
@@ -65,6 +70,7 @@
         dueSoon: dueSoonOnly
       });
       items = append ? [...items, ...response.data.items] : response.data.items;
+      total = response.data.total;
       page = response.data.page;
       hasMore = response.data.has_more;
     } catch (error) {
@@ -102,67 +108,38 @@
     void load(1);
   }
 
-  async function removeTask(task: TaskListItem) {
-    if (
-      !(await confirmDialog({
-        title: '逻辑删除任务',
-        message: `确定删除 ${task.task_key}「${task.title}」吗？删除后可在项目操作日志追溯。`,
-        confirmLabel: '删除',
-        danger: true
-      }))
-    ) {
-      return;
-    }
-    deletingId = task.id;
-    errorMessage = '';
-    try {
-      await deleteTask(task.task_key, '用户从全局任务列表删除任务');
-      items = items.filter((item) => item.id !== task.id);
-    } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '任务删除失败';
-    } finally {
-      deletingId = null;
-    }
-  }
-
   bindReload(() => void load(1));
 </script>
 
-<PageHeader
-  title="任务"
-  eyebrow="Tasks"
-  description="跨项目聚合你负责的、创建的以及可见项目的全部任务。"
-/>
+<div class="page-head">
+  <h1>任务</h1>
+  <div class="meta-row">
+    <span class="meta-item">范围:<b>{scopeLabel[scope]}</b></span><span class="sep">·</span>
+    <span class="meta-item">共 {total} 项</span>
+    {#if overdueOnly}<span class="sep">·</span><span class="meta-item danger">仅看逾期</span>{/if}
+    {#if dueSoonOnly}<span class="sep">·</span><span class="meta-item warn">7 天内到期</span>{/if}
+  </div>
+</div>
 
-<div class="scope-tabs" role="tablist" aria-label="任务范围">
-  {#each scopes as item}
-    <button
-      class="scope-tab"
-      class:active={scope === item.value}
-      role="tab"
-      aria-selected={scope === item.value}
-      type="button"
-      onclick={() => switchScope(item.value)}
-    >
-      {item.label}
-    </button>
-  {/each}
-  <form class="scope-tools" onsubmit={applySearch}>
-    <input
-      class="search-input"
-      bind:value={keyword}
-      placeholder="搜索任务标题或编号"
-      aria-label="搜索任务"
-    />
-    <button class="secondary-button" type="submit" disabled={loading}>搜索</button>
-    <label class="overdue-toggle">
-      <input type="checkbox" checked={overdueOnly} onchange={toggleOverdue} />
-      仅看逾期
-    </label>
-    <label class="overdue-toggle">
-      <input type="checkbox" checked={dueSoonOnly} onchange={toggleDueSoon} />
-      7 天内到期
-    </label>
+<div class="toolbar">
+  <div class="segmented" role="tablist" aria-label="任务范围">
+    {#each scopes as item}
+      <button
+        class:active={scope === item.value}
+        role="tab"
+        aria-selected={scope === item.value}
+        type="button"
+        onclick={() => switchScope(item.value)}
+      >
+        {item.label}
+      </button>
+    {/each}
+  </div>
+  <span class="flex-fill"></span>
+  <button class="filter-chip" class:active={overdueOnly} type="button" onclick={toggleOverdue}>仅看逾期</button>
+  <button class="filter-chip" class:active={dueSoonOnly} type="button" onclick={toggleDueSoon}>7 天内到期</button>
+  <form onsubmit={applySearch}>
+    <input class="search-input" bind:value={keyword} placeholder="搜索任务标题或编号" aria-label="搜索任务" />
   </form>
 </div>
 
@@ -171,57 +148,38 @@
 {/if}
 
 {#if loading}
-  <div class="workspace-card state-box">正在加载任务…</div>
+  <div class="state-box">正在加载任务…</div>
 {:else if !groups.length}
-  <div class="workspace-card state-box">
+  <div class="empty-panel">
     <strong>没有任务</strong>
-    <p>切换范围,或到项目看板创建第一个任务。</p>
+    <p>切换范围或筛选,或到项目看板创建第一个任务。</p>
     <a class="secondary-button" href="/projects">去项目列表</a>
   </div>
 {:else}
-  {#each groups as group (group.projectKey)}
-    <section class="workspace-card project-group">
-      <header>
-        <a class="project-link" href={`/projects/${group.projectKey}/board`}>
-          <strong>{group.projectName}</strong>
-          <code>{group.projectKey}</code>
-        </a>
-        <span>{group.tasks.length} 项</span>
-      </header>
-      <div class="task-rows">
-        {#each group.tasks as task (task.id)}
-          <div class="task-row">
-            <a class="task-main" href={`/tasks/${task.task_key}`}>
-              <span class="task-key">{task.task_key}</span>
-              <span class="task-title">{task.title}</span>
-              <span class="status-pill">{task.status_name}</span>
-              <TaskTypePill taskType={task.task_type} />
-              <PriorityPill priority={task.priority} />
-              <span class="assignee">
-                {#if task.assignee_name}<Avatar name={task.assignee_name} size={18} />{task.assignee_name}{:else}未分配{/if}
-              </span>
-              {#if task.due_at}
-                <span class="due" class:danger={isOverdue(task)}>
-                  {new Date(task.due_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} 截止
-                </span>
-              {:else}
-                <span class="due"></span>
-              {/if}
-              <time>{new Date(task.updated_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</time>
-            </a>
-            <button
-              class="row-delete"
-              type="button"
-              disabled={deletingId === task.id}
-              onclick={() => removeTask(task)}
-            >
-              {deletingId === task.id ? '删除中…' : '删除'}
-            </button>
-          </div>
-        {/each}
+  <section class="list-panel">
+    {#each groups as group (group.projectKey)}
+      <div class="group-bar">
+        <code>{group.projectKey}</code>
+        <span>{group.projectName}</span>
+        <span class="group-count">{group.tasks.length} 项</span>
       </div>
-    </section>
-  {/each}
+      {#each group.tasks as task (task.id)}
+        <a class="task-row" href={`/tasks/${task.task_key}`}>
+          <span class="task-key">{task.task_key}</span>
+          <span class="task-title">{task.title}</span>
+          <StatusBadge name={task.status_name} category={task.status_category} />
+          <span class="col-type"><TaskTypePill taskType={task.task_type} /></span>
+          <span class="col-priority"><PriorityPill priority={task.priority} /></span>
+          <span class="col-assignee">
+            {#if task.assignee_name}<Avatar name={task.assignee_name} size={18} />{:else}<span class="unassigned">未分配</span>{/if}
+          </span>
+          <span class="due" class:danger={isOverdue(task)}>
+            {#if task.due_at}{new Date(task.due_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}{:else}—{/if}
+          </span>
+        </a>
+      {/each}
+    {/each}
+  </section>
   {#if hasMore}
     <div class="pager">
       <button class="secondary-button" type="button" disabled={appending} onclick={() => void load(page + 1, true)}>
@@ -232,125 +190,72 @@
 {/if}
 
 <style>
-  .scope-tabs {
-    display: flex;
-    align-items: center;
-    gap: 18px;
-    margin-bottom: 18px;
-    border-bottom: 1px solid var(--color-border);
-  }
-  .scope-tools { display: flex; align-items: center; gap: 10px; margin-left: auto; padding-bottom: 8px; }
-  .search-input {
-    width: 220px;
-    padding: 7px 10px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-surface);
-    color: var(--color-text);
-    font-size: 13px;
-  }
-  .search-input:focus-visible { outline: none; box-shadow: var(--color-focus-ring); }
-  .scope-tools .secondary-button { padding: 7px 12px; font-size: 12px; }
-  .overdue-toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-muted); font-size: 12px; cursor: pointer; user-select: none; }
-  .overdue-toggle input { accent-color: var(--color-primary); }
-  .scope-tab {
-    padding: 8px 2px 10px;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    background: transparent;
-    color: var(--color-text-muted);
-    font-size: 13px;
-    cursor: pointer;
-    transition: color var(--transition-fast), border-color var(--transition-fast);
-  }
-  .scope-tab:hover { color: var(--color-text-secondary); }
-  .scope-tab.active { color: var(--color-text); border-bottom-color: var(--color-text); font-weight: 500; }
-  .scope-tab:focus-visible { outline: none; box-shadow: var(--color-focus-ring); border-radius: var(--radius-sm); }
+  .page-head { margin-bottom: 18px; }
+  .page-head h1 { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.35; }
+  .meta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 8px; font-size: 13px; color: var(--color-text-muted); }
+  .meta-item { display: inline-flex; align-items: center; gap: 6px; }
+  .meta-item b { color: var(--color-text-secondary); font-weight: 500; }
+  .meta-item.danger { color: var(--color-danger); }
+  .meta-item.warn { color: var(--color-warning); }
+  .sep { color: var(--color-border); }
 
-  .error-message {
-    margin-bottom: 14px;
-    padding: 8px 12px;
-    border: 1px solid var(--color-danger);
-    border-radius: var(--radius-md);
-    color: var(--color-danger);
-    font-size: 13px;
-  }
+  .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .flex-fill { flex: 1; }
+  .segmented { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-sunken); }
+  .segmented button { padding: 5px 12px; border-radius: calc(var(--radius-md) - 2px); background: transparent; color: var(--color-text-muted); font-size: 12px; cursor: pointer; transition: background-color var(--transition-fast), color var(--transition-fast); }
+  .segmented button:hover { color: var(--color-text-secondary); }
+  .segmented button.active { background: var(--color-surface-raised); color: var(--color-text); font-weight: 500; box-shadow: 0 0 0 1px var(--color-border-weak); }
 
-  .project-group { margin-bottom: 16px; }
-  .project-group header {
-    display: flex;
-    justify-content: space-between;
+  .filter-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; border: 1px solid var(--color-border); border-radius: 999px; background: transparent; color: var(--color-text-muted); font-size: 12px; cursor: pointer; transition: color var(--transition-fast), border-color var(--transition-fast), background-color var(--transition-fast); }
+  .filter-chip:hover { color: var(--color-text-secondary); border-color: var(--color-border-strong); }
+  .filter-chip.active { background: var(--color-primary-soft); border-color: var(--color-primary); color: var(--color-primary-strong); font-weight: 500; }
+
+  .search-input { width: 200px; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text); font-size: 13px; }
+  .search-input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--color-focus-ring); }
+
+  .list-panel { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); overflow: hidden; }
+  .group-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px 6px; font-size: 12px; color: var(--color-text-muted); }
+  .group-bar code { color: var(--color-primary-strong); font-family: var(--font-mono); }
+  .group-bar + .task-row { border-top: 1px solid var(--color-border-weak); }
+  .group-count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--color-text-muted); }
+
+  .task-row {
+    display: grid;
+    grid-template-columns: 104px minmax(0, 1fr) auto auto auto minmax(60px, auto) 56px;
     align-items: center;
     gap: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--color-border);
-  }
-  .project-link { display: flex; align-items: baseline; gap: 8px; text-decoration: none; }
-  .project-link strong { color: var(--color-text); font-size: 15px; font-weight: 500; }
-  .project-link strong:hover { color: var(--color-primary); }
-  .project-link code { color: var(--color-text-muted); font-family: var(--font-mono); font-size: 11px; }
-  .project-group header > span { color: var(--color-text-muted); font-size: 12px; }
-
-  .task-rows { display: grid; }
-  .task-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 2px;
-    border-bottom: 1px solid var(--color-border-weak);
+    padding: 10px 14px;
+    color: var(--color-text);
+    text-decoration: none;
     font-size: 13px;
     transition: background-color var(--transition-fast);
   }
-  .task-row:last-child { border-bottom: 0; }
   .task-row:hover { background: var(--color-hover); }
-  .task-main {
-    display: grid;
-    grid-template-columns: 110px minmax(0, 1fr) auto auto minmax(90px, auto) minmax(70px, auto) auto;
-    align-items: center;
-    gap: 14px;
-    flex: 1;
-    min-width: 0;
-    color: var(--color-text);
-    text-decoration: none;
-  }
-  .due { color: var(--color-text-muted); font-size: 12px; white-space: nowrap; }
-  .due.danger { color: var(--color-danger); font-weight: 500; }
-  .row-delete {
-    flex: none;
-    border: 0;
-    padding: 4px 8px;
-    background: transparent;
-    color: var(--color-danger);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    border-radius: var(--radius-sm);
-    opacity: 0;
-    transition: opacity var(--transition-fast), background-color var(--transition-fast);
-  }
-  .task-row:hover .row-delete, .row-delete:focus-visible { opacity: 1; }
-  .row-delete:disabled { cursor: not-allowed; opacity: 0.45; }
   .task-key { color: var(--color-text-muted); font-family: var(--font-mono); font-size: 12px; }
-  .task-main:hover .task-key { color: var(--color-primary-strong); }
+  .task-row:hover .task-key { color: var(--color-primary-strong); }
   .task-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .assignee { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-muted); }
-  .task-main time { color: var(--color-text-muted); font-size: 12px; }
+  .col-type, .col-priority, .col-assignee { display: inline-flex; align-items: center; justify-content: center; }
+  .col-assignee { color: var(--color-text-muted); }
+  .unassigned { font-size: 12px; color: var(--color-text-muted); }
+  .due { text-align: right; font-size: 12px; color: var(--color-text-muted); font-family: var(--font-mono); }
+  .due.danger { color: var(--color-danger); font-weight: 500; }
 
-  .state-box { display: grid; place-items: center; gap: 8px; min-height: 200px; color: var(--color-text-muted); }
-  .state-box strong { color: var(--color-text-secondary); font-size: 14px; font-weight: 500; }
-  .state-box p { font-size: 13px; }
-  .state-box a { margin-top: 6px; }
+  .error-message { margin-bottom: 14px; padding: 8px 12px; border: 1px solid var(--color-danger); border-radius: var(--radius-md); color: var(--color-danger); font-size: 13px; }
 
-  .pager { display: flex; justify-content: center; padding: 6px 0 14px; }
+  .state-box { display: grid; place-items: center; min-height: 220px; color: var(--color-text-muted); }
+  .empty-panel { display: grid; place-items: center; gap: 8px; min-height: 220px; padding: 24px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); color: var(--color-text-muted); }
+  .empty-panel strong { color: var(--color-text-secondary); font-size: 14px; font-weight: 500; }
+  .empty-panel p { font-size: 13px; }
+  .empty-panel a { margin-top: 6px; }
+
+  .pager { display: flex; justify-content: center; padding: 14px 0; }
 
   @media (max-width: 900px) {
-    .scope-tabs { flex-wrap: wrap; row-gap: 10px; }
-    .scope-tools { margin-left: 0; width: 100%; }
+    .toolbar { align-items: stretch; flex-direction: column; }
+    .search-input { width: 100%; }
   }
   @media (max-width: 760px) {
-    .task-main { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
-    .task-main :global(.priority-pill), .assignee, .due { display: none; }
-    .row-delete { opacity: 1; }
+    .task-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+    .task-key, .col-type, .col-priority, .due { display: none; }
   }
 </style>

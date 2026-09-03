@@ -1,8 +1,9 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import PageHeader from '$lib/components/PageHeader.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  import Avatar from '$lib/components/Avatar.svelte';
+  import LabelPill from '$lib/components/LabelPill.svelte';
   import { ApiClientError } from '$lib/api/client';
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { listStatuses, listProjectMembers } from '$lib/api/projects';
@@ -10,13 +11,15 @@
   import { listTaskLogs } from '$lib/api/audit';
   import { deleteAttachment, listTaskAttachments, uploadTaskAttachment, attachmentUrl } from '$lib/api/attachments';
   import { addDependency, addTaskLabel, copyTask, createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, listDependencies, listLabels, listTasks, removeDependency, removeTaskLabel, transitionTask, updateTask } from '$lib/api/tasks';
-  import type { Attachment, Comment, LabelView, Milestone, OperationLog, ProjectMember, ProjectStatus, TaskDependencies, TaskView } from '$lib/api/types';
+  import type { Attachment, Comment, LabelView, Milestone, OperationLog, Priority, ProjectMember, ProjectStatus, TaskDependencies, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
   import { meStore } from '$lib/features/auth/me.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
   import { taskTypeOptions } from '$lib/features/task-types';
-  import TaskTypePill from '$lib/components/TaskTypePill.svelte';
-  import LabelPill from '$lib/components/LabelPill.svelte';
+
+  type TaskUpdateInput = Parameters<typeof updateTask>[1];
+  type ActivityTab = 'all' | 'comments' | 'changes';
+  type FeedItem = { kind: 'comment'; time: number; comment: Comment } | { kind: 'change'; time: number; log: OperationLog };
 
   const taskKey = $derived(String(page.params.taskKey ?? ''));
   const projectKey = $derived(taskKey.replace(/-\d+$/, ''));
@@ -34,22 +37,23 @@
   let dependencies = $state<TaskDependencies | null>(null);
   let projectTasks = $state<TaskView[]>([]);
   let changeLogs = $state<OperationLog[]>([]);
-  let changeLogsOpen = $state(false);
-  let expandedLogId = $state<string | null>(null);
-  let copying = $state(false);
-  let selectedStatus = $state('');
-  let selectedStartAt = $state('');
-  let selectedDueAt = $state('');
-  let selectedAssigneeId = $state<string | null>(null);
-  let selectedReviewerId = $state<string | null>(null);
-  let selectedTaskType = $state('feature');
-  let selectedMilestoneId = $state<string | null>(null);
+  let activityTab = $state<ActivityTab>('all');
+  // 标题/描述行内编辑草稿,编辑态才有值。
+  let titleDraft = $state('');
+  let editingTitle = $state(false);
+  let descDraft = $state('');
+  let editingDesc = $state(false);
+  // 侧栏 ghost 入口展开态。
+  let addLabelOpen = $state(false);
+  let addDepOpen = $state(false);
+  let addParentOpen = $state(false);
   let labelInput = $state('');
   let dependencyTarget = $state('');
-  let savingDetails = $state(false);
+  let attachParentId = $state('');
+  let propBusy = $state(false);
+  let copying = $state(false);
   let labelBusy = $state(false);
   let dependencyBusy = $state(false);
-  let attachParentId = $state('');
   let showSubtaskModal = $state(false);
   let subtaskTitle = $state('');
   let subtaskDescription = $state('');
@@ -61,6 +65,7 @@
   let subtaskComment = $state('');
   let subtaskImages = $state<{ file: File; url: string }[]>([]);
   let subtaskError = $state('');
+  let quickSubtaskTitle = $state('');
   let loading = $state(true);
   let submitting = $state(false);
   let uploading = $state(false);
@@ -70,22 +75,50 @@
   let taskFileInput = $state<HTMLInputElement | null>(null);
   let commentFileInput = $state<HTMLInputElement | null>(null);
   let subtaskImageInput = $state<HTMLInputElement | null>(null);
+  // 行内编辑挂载后自动聚焦:标题全选,描述落在文末。
+  let titleInputEl = $state<HTMLInputElement | null>(null);
+  let descInputEl = $state<HTMLTextAreaElement | null>(null);
+  $effect(() => {
+    if (editingTitle && titleInputEl) {
+      titleInputEl.focus();
+      titleInputEl.select();
+    }
+  });
+  $effect(() => {
+    if (editingDesc && descInputEl) {
+      descInputEl.focus();
+      descInputEl.setSelectionRange(descInputEl.value.length, descInputEl.value.length);
+    }
+  });
   const statusName = (id: string) => statuses.find((status) => status.id === id)?.name || id.slice(0, 8);
-  const priorityName: Record<string, string> = { urgent: '紧急', high: '高', medium: '中', low: '低', none: '无' };
+  const priorityOptions: { value: Priority; label: string }[] = [
+    { value: 'urgent', label: '紧急' },
+    { value: 'high', label: '高' },
+    { value: 'medium', label: '中' },
+    { value: 'low', label: '低' },
+    { value: 'none', label: '无' }
+  ];
   // datetime-local 的值是本地时区无时区后缀,与 ISO 互转都经 Date 对象走本机时区。
   const isoToLocalInput = (iso: string) => {
     const date = new Date(iso);
     const pad = (value: number) => String(value).padStart(2, '0');
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
   };
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const fmtTime = (iso: string) => {
+    const date = new Date(iso);
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
   // 父任务信息:面包屑、归属卡、子任务进度都要用。
   const parentTask = $derived.by(() => {
     const parentId = task?.parent_task_id;
     return parentId ? (rootTasks.find((item) => item.id === parentId) ?? null) : null;
   });
-  const doneSubtasks = $derived(
-    subtasks.filter((item) => statuses.find((status) => status.id === item.status_id)?.category === 'done').length
-  );
+  const currentStatus = $derived(statuses.find((status) => status.id === task?.status_id) ?? null);
+  const subtaskDone = (item: TaskView) => statuses.find((status) => status.id === item.status_id)?.category === 'done';
+  const doneSubtasks = $derived(subtasks.filter(subtaskDone).length);
+  const subtaskProgress = $derived(subtasks.length ? Math.round((doneSubtasks / subtasks.length) * 100) : 0);
+  const isOverdue = $derived(Boolean(task?.due_at && currentStatus?.category !== 'done' && new Date(task.due_at) < new Date()));
   // 状态流转权限镜像后端规则:管理员豁免;评审人任意;负责人仅限非完成列;其他成员只读。
   const statusControl = $derived.by(() => {
     const me = meStore.current;
@@ -102,6 +135,19 @@
       current && !allowed.some((status) => status.id === current.id) ? [...allowed, current] : allowed;
     return { canChange, canSetDone, options: canChange || !current ? options : [current] };
   });
+  // 活动流:评论与变更记录合并按时间倒序;「全部」隐藏评论日志本体(评论条目已展示,避免重复)。
+  const feed = $derived.by(() => {
+    const items: FeedItem[] = [
+      ...comments.map((comment): FeedItem => ({ kind: 'comment', time: new Date(comment.created_at).getTime(), comment })),
+      ...changeLogs
+        .filter((log) => activityTab !== 'all' || log.module !== 'comment')
+        .map((log): FeedItem => ({ kind: 'change', time: new Date(log.created_at).getTime(), log }))
+    ];
+    return items.sort((left, right) => right.time - left.time);
+  });
+  const tabKind = $derived(activityTab === 'comments' ? 'comment' : 'change');
+  const visibleFeed = $derived(activityTab === 'all' ? feed : feed.filter((item) => item.kind === tabKind));
+  const actorName = (log: OperationLog) => members.find((member) => member.user_id === log.actor_user_id)?.display_name ?? '成员';
 
   async function load() {
     loading = true;
@@ -132,14 +178,8 @@
       labels = labelResponse.data;
       dependencies = dependencyResponse.data;
       changeLogs = logResponse.data.items;
-      selectedStatus = task.status_id;
-      selectedStartAt = taskResponse.data.start_at ? isoToLocalInput(taskResponse.data.start_at) : '';
-      selectedDueAt = taskResponse.data.due_at ? isoToLocalInput(taskResponse.data.due_at) : '';
-      selectedAssigneeId = taskResponse.data.assignee_id;
-      selectedReviewerId = taskResponse.data.reviewer_id;
-      selectedTaskType = taskResponse.data.task_type;
-      selectedMilestoneId = taskResponse.data.milestone_id;
-      attachParentId = '';
+      editingTitle = false;
+      editingDesc = false;
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务加载失败';
     } finally {
@@ -147,17 +187,87 @@
     }
   }
 
-  async function changeStatus() {
-    if (!task || !selectedStatus || selectedStatus === task.status_id) return;
-    submitting = true;
+  // 字段改动即时落库并整体刷新任务视图;变更记录随之补拉,让活动流跟上。
+  async function saveField(patch: TaskUpdateInput) {
+    if (!task) return;
+    propBusy = true;
+    errorMessage = '';
     try {
-      task = (await transitionTask(task.task_key, selectedStatus)).data;
+      task = (await updateTask(task.task_key, patch)).data;
+      void refreshLogs();
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '任务字段保存失败';
+    } finally {
+      propBusy = false;
+    }
+  }
+
+  async function refreshLogs() {
+    try {
+      changeLogs = (await listTaskLogs(taskKey, 1, 20)).data.items;
+    } catch {
+      // 活动流刷新失败不打断主流程,下次进入页面自然补齐。
+    }
+  }
+
+  async function changeStatus(event: Event) {
+    if (!task) return;
+    const next = (event.currentTarget as HTMLSelectElement).value;
+    if (!next || next === task.status_id) return;
+    submitting = true;
+    errorMessage = '';
+    try {
+      task = (await transitionTask(task.task_key, next)).data;
+      void refreshLogs();
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '状态修改失败';
-      if (task) selectedStatus = task.status_id;
     } finally {
       submitting = false;
     }
+  }
+
+  async function commitDate(field: 'start_at' | 'due_at', event: Event) {
+    const value = (event.currentTarget as HTMLInputElement).value;
+    const patch = { [field]: value ? new Date(value).toISOString() : null } as TaskUpdateInput;
+    await saveField(patch);
+  }
+
+  // 标题:点击切换输入框,回车/失焦提交,Esc 还原。
+  function startEditTitle() {
+    if (!task) return;
+    titleDraft = task.title;
+    editingTitle = true;
+  }
+
+  async function commitTitle() {
+    if (!editingTitle || !task) return;
+    editingTitle = false;
+    const next = titleDraft.trim();
+    if (!next || next === task.title) return;
+    await saveField({ title: next });
+  }
+
+  function titleKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void commitTitle();
+    } else if (event.key === 'Escape') {
+      editingTitle = false;
+    }
+  }
+
+  function startEditDesc() {
+    if (!task) return;
+    descDraft = task.description ?? '';
+    editingDesc = true;
+  }
+
+  async function commitDesc() {
+    if (!editingDesc || !task) return;
+    editingDesc = false;
+    const next = descDraft.trim();
+    if (next === (task.description ?? '')) return;
+    await saveField({ description: next || null });
   }
 
   function resetSubtaskForm() {
@@ -198,6 +308,24 @@
     subtaskImages = subtaskImages.filter((item) => item !== image);
   }
 
+  // 快捷新建:只填标题就走默认状态/默认列,后续再到子任务详情里补齐。
+  async function quickAddSubtask(event: SubmitEvent) {
+    event.preventDefault();
+    const title = quickSubtaskTitle.trim();
+    if (!title || !task) return;
+    submitting = true;
+    errorMessage = '';
+    try {
+      await createSubtask(taskKey, { title });
+      subtasks = (await getSubtasks(taskKey)).data;
+      quickSubtaskTitle = '';
+    } catch (error) {
+      errorMessage = error instanceof ApiClientError ? error.message : '子任务创建失败';
+    } finally {
+      submitting = false;
+    }
+  }
+
   async function addSubtask(event: SubmitEvent) {
     event.preventDefault();
     if (!subtaskTitle.trim()) {
@@ -210,8 +338,8 @@
     let created: TaskView | null = null;
     try {
       // 继承当前状态,但完成列只有可定稿的人才能作为子任务初始状态,其余回落后端默认状态。
-      const inherit = statuses.find((status) => status.id === selectedStatus);
-      const statusId = inherit && (inherit.category !== 'done' || statusControl.canSetDone) ? selectedStatus : undefined;
+      const inherit = statuses.find((status) => status.id === task?.status_id);
+      const statusId = inherit && (inherit.category !== 'done' || statusControl.canSetDone) ? inherit.id : undefined;
       created = (await createSubtask(taskKey, {
         title: subtaskTitle.trim(),
         description: subtaskDescription.trim() || undefined,
@@ -272,7 +400,7 @@
   }
 
   async function removeTask() {
-    if (!task || !(await confirmDialog({ title: '逻辑删除任务', message: `确认逻辑删除任务 ${task.task_key}？`, confirmLabel: '删除', danger: true }))) return;
+    if (!task || !(await confirmDialog({ title: '逻辑删除任务', message: `确认逻辑删除任务 ${task.task_key}？删除后可在项目回收站恢复。`, confirmLabel: '删除', danger: true }))) return;
     deleting = true;
     try {
       await deleteTask(task.task_key, '用户从任务详情页发起删除');
@@ -333,32 +461,6 @@
     return JSON.stringify(value);
   }
 
-  async function saveTaskDetails() {
-    if (!task) return;
-    savingDetails = true;
-    errorMessage = '';
-    try {
-      const updated = (await updateTask(task.task_key, {
-        assignee_id: selectedAssigneeId,
-        reviewer_id: selectedReviewerId,
-        task_type: selectedTaskType,
-        start_at: selectedStartAt ? new Date(selectedStartAt).toISOString() : null,
-        due_at: selectedDueAt ? new Date(selectedDueAt).toISOString() : null,
-        milestone_id: selectedMilestoneId
-      })).data;
-      task = updated;
-      selectedAssigneeId = updated.assignee_id;
-      selectedReviewerId = updated.reviewer_id;
-      selectedMilestoneId = updated.milestone_id;
-      selectedStartAt = updated.start_at ? isoToLocalInput(updated.start_at) : '';
-      selectedDueAt = updated.due_at ? isoToLocalInput(updated.due_at) : '';
-    } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '任务信息保存失败';
-    } finally {
-      savingDetails = false;
-    }
-  }
-
   // 标签:输入回车新建,或点项目已有标签快速附上;× 移除关联。
   async function submitLabel(event: SubmitEvent) {
     event.preventDefault();
@@ -370,6 +472,7 @@
       if (!task.labels.some((item) => item.id === label.id)) task.labels = [...task.labels, label];
       if (!labels.some((item) => item.id === label.id)) labels = [...labels, label];
       labelInput = '';
+      addLabelOpen = false;
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '标签添加失败';
     } finally {
@@ -390,15 +493,18 @@
     }
   }
 
-  // 依赖:选择同项目任务添加「阻塞我」关系;返回全量列表直接回填。
-  async function submitDependency(event: SubmitEvent) {
-    event.preventDefault();
-    if (!task || !dependencyTarget) return;
+  // 依赖:ghost 展开选择器,选中即建「阻塞我」关系;返回全量列表直接回填。
+  async function pickDependency(event: Event) {
+    if (!task) return;
+    const next = (event.currentTarget as HTMLSelectElement).value;
+    if (!next) return;
     dependencyBusy = true;
     errorMessage = '';
     try {
-      dependencies = (await addDependency(task.task_key, dependencyTarget)).data;
+      dependencies = (await addDependency(task.task_key, next)).data;
       dependencyTarget = '';
+      addDepOpen = false;
+      void refreshLogs();
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '依赖添加失败';
     } finally {
@@ -412,6 +518,7 @@
     errorMessage = '';
     try {
       dependencies = (await removeDependency(task.task_key, dependencyId)).data;
+      void refreshLogs();
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '依赖移除失败';
     } finally {
@@ -437,6 +544,7 @@
       const updated = (await updateTask(task.task_key, { parent_task_id: parentId })).data;
       task = updated;
       attachParentId = '';
+      addParentOpen = false;
       // 归属变了,子任务列表与根任务选择集同步调整。
       subtasks = (await getSubtasks(taskKey)).data;
       rootTasks = parentId
@@ -464,7 +572,7 @@
         else pending = [...pending, created];
       }
     } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '图片上传失败';
+      errorMessage = error instanceof ApiClientError ? error.message : '附件上传失败';
     } finally {
       uploading = false;
     }
@@ -482,10 +590,10 @@
   async function removeAttachment(item: Attachment) {
     if (!(await confirmDialog({ title: '删除附件', message: `确定删除 ${item.file_name} 吗？`, confirmLabel: '删除', danger: true }))) return;
     try {
-      await deleteAttachment(item.id, '用户从任务详情页删除图片');
+      await deleteAttachment(item.id, '用户从任务详情页删除附件');
       attachments = attachments.filter((attachment) => attachment.id !== item.id);
     } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '图片删除失败';
+      errorMessage = error instanceof ApiClientError ? error.message : '附件删除失败';
     }
   }
 
@@ -500,337 +608,480 @@
     <a class="primary-button" href="/projects">返回项目列表</a>
   </div>
 {:else if task}
-  <PageHeader
-    title={task.title}
-    crumbs={[
-      { label: '任务', href: '/tasks' },
-      { label: projectKey, href: `/projects/${projectKey}/board` },
-      ...(parentTask ? [{ label: `父任务 ${parentTask.task_key}`, href: `/tasks/${parentTask.task_key}` }] : []),
-      { label: task.task_key }
-    ]}
-    description={task.description || '暂无描述。'}
-  />
-  <div class="detail-grid">
-    <section class="workspace-card main-card">
-      <div class="field-grid">
-        <div>
-          <span class="field-label">任务状态</span>
-          <select bind:value={selectedStatus} onchange={changeStatus} disabled={submitting || !statusControl.canChange}>
-            {#each statusControl.options as status}<option value={status.id}>{status.name}</option>{/each}
-            {#if !statusControl.options.length}<option value={task.status_id}>{statusName(task.status_id)}</option>{/if}
-          </select>
-          {#if !statusControl.canChange}<span class="flow-hint">仅负责人或评审人可变更状态</span>{/if}
-        </div>
-        <div>
-          <span class="field-label">负责人</span>
-          <MemberPicker value={selectedAssigneeId} {members} disabled={submitting || savingDetails} onchange={(value) => (selectedAssigneeId = value)} ariaLabel={`设置 ${task.title} 的负责人`} />
-        </div>
-        <div>
-          <span class="field-label">评审人</span>
-          <MemberPicker value={selectedReviewerId} {members} disabled={submitting || savingDetails} onchange={(value) => (selectedReviewerId = value)} ariaLabel={`设置 ${task.title} 的评审人`} />
-        </div>
-        <div><span class="field-label">类型</span><select bind:value={selectedTaskType} disabled={submitting || savingDetails} aria-label="任务类型">
-          {#each taskTypeOptions as option}<option value={option.value}>{option.label}</option>{/each}
-        </select></div>
-        <div><span class="field-label">优先级</span><strong class="priority">{priorityName[task.priority]}</strong></div>
-        <div>
-          <span class="field-label">里程碑</span>
-          <select bind:value={selectedMilestoneId} disabled={submitting || savingDetails} aria-label="关联里程碑">
-            <option value={null}>未关联</option>
-            {#each milestones as milestone (milestone.id)}
-              <option value={milestone.id}>{milestone.name}{milestone.due_date ? ` · ${milestone.due_date}` : ''}</option>
-            {/each}
-          </select>
-        </div>
-        <div>
-          <span class="field-label">开始时间</span>
+  <div class="task-page">
+    <nav class="breadcrumb" aria-label="任务路径">
+      <a href="/tasks">任务</a>
+      <span>/</span>
+      <a href={`/projects/${projectKey}/board`}>{projectKey}</a>
+      {#if parentTask}
+        <span>/</span>
+        <a href={`/tasks/${parentTask.task_key}`}>{parentTask.task_key}</a>
+      {/if}
+      <span>/</span>
+      <span>{task.task_key}</span>
+    </nav>
+
+    <header class="task-header">
+      <div class="title-row">
+        {#if editingTitle}
           <input
-            class="due-input"
-            type="datetime-local"
-            bind:value={selectedStartAt}
-            disabled={submitting || savingDetails}
-            aria-label="开始时间"
+            class="title-input"
+            bind:value={titleDraft}
+            bind:this={titleInputEl}
+            maxlength="200"
+            aria-label="任务标题"
+            onkeydown={titleKeydown}
+            onblur={() => void commitTitle()}
           />
-        </div>
-        <div>
-          <span class="field-label">结束时间</span>
-          <input
-            class="due-input"
-            type="datetime-local"
-            bind:value={selectedDueAt}
-            disabled={submitting || savingDetails}
-            aria-label="结束时间"
-          />
-        </div>
-        <div><span class="field-label">任务编号</span><strong class="mono">#{task.task_number}</strong></div>
-        <div><span class="field-label">更新时间</span><strong>{new Date(task.updated_at).toLocaleString('zh-CN')}</strong></div>
-      </div>
-      <div class="details-save-bar">
-        <span>负责人、审批人和排期修改后，点击保存才会生效。</span>
-        <button class="primary-button" type="button" onclick={saveTaskDetails} disabled={savingDetails || submitting}>
-          {savingDetails ? '保存中…' : '保存任务信息'}
-        </button>
-      </div>
-      <div class="description-block">
-        <span class="field-label">任务描述</span>
-        <p>{task.description || '暂无描述内容。'}</p>
-      </div>
-      <div class="labels-block">
-        <span class="field-label">标签</span>
-        {#if task.labels.length}
-          <div class="label-list">
-            {#each task.labels as label (label.id)}
-              <LabelPill name={label.name} onremove={labelBusy ? undefined : () => detachLabel(label.id)} />
-            {/each}
-          </div>
         {:else}
-          <p class="empty-inline">还没有标签。</p>
+          <button class="task-title" type="button" title="点击编辑标题" onclick={startEditTitle}>
+            {task.title}
+          </button>
         {/if}
-        <form class="label-form" onsubmit={submitLabel}>
-          <input bind:value={labelInput} placeholder="输入标签名,回车添加" aria-label="新标签名称" disabled={labelBusy} />
-          <button class="secondary-button" type="submit" disabled={labelBusy || !labelInput.trim()}>添加</button>
-        </form>
-        {#if labels.length}
-          <div class="label-suggestions">
-            {#each labels as label (label.id)}
-              {#if !task.labels.some((item) => item.id === label.id)}
-                <button class="text-button label-suggest" type="button" disabled={labelBusy} onclick={() => { labelInput = label.name; }}>+ {label.name}</button>
-              {/if}
-            {/each}
-          </div>
-        {/if}
-      </div>
-      <div class="attachment-block">
-        <div class="subtask-heading">
-          <div><h2>附件</h2><p>图片直接预览;其他文件(文档、压缩包等)以列表下载,单个不超过 10MB。</p></div>
-          <span>{attachments.length} 个</span>
-        </div>
-        {#if attachments.some((item) => item.mime_type.startsWith('image/'))}
-          <div class="attachment-grid">
-            {#each attachments.filter((item) => item.mime_type.startsWith('image/')) as item (item.id)}
-              <figure>
-                <a href={attachmentUrl(item.url)} target="_blank" rel="noreferrer">
-                  <img src={attachmentUrl(item.url)} alt={item.file_name} loading="lazy" />
-                </a>
-                <figcaption>
-                  <span title={item.file_name}>{item.file_name}</span>
-                  <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
-                </figcaption>
-              </figure>
-            {/each}
-          </div>
-        {/if}
-        {#if attachments.some((item) => !item.mime_type.startsWith('image/'))}
-          <div class="file-list">
-            {#each attachments.filter((item) => !item.mime_type.startsWith('image/')) as item (item.id)}
-              <div class="file-row">
-                <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name}>
-                  <span class="file-icon" aria-hidden="true">▤</span>
-                  <span class="file-title">{item.file_name}</span>
-                  <small>{(item.byte_size / 1024).toFixed(0)} KB</small>
-                </a>
-                <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
-              </div>
-            {/each}
-          </div>
-        {/if}
-        {#if !attachments.length}
-          <div class="empty-inline">还没有上传附件。</div>
-        {/if}
-        <input type="file" multiple hidden bind:this={taskFileInput} onchange={(event) => uploadImages(event, 'task')} />
-        <button class="secondary-button attach-button" type="button" disabled={uploading} onclick={() => taskFileInput?.click()}>
-          {uploading ? '上传中…' : '上传附件'}
-        </button>
-      </div>
-      <div class="changelog-block">
-        <div class="subtask-heading">
-          <div><h2>变更记录</h2><p>任务的创建、编辑、流转与依赖调整都会留痕,可展开查看字段明细。</p></div>
-          <button class="text-button toggle-changelog" type="button" onclick={() => (changeLogsOpen = !changeLogsOpen)}>
-            {changeLogsOpen ? '收起' : `展开(${changeLogs.length})`}
+        <div class="header-actions">
+          <button class="icon-btn" type="button" onclick={duplicateTask} disabled={copying} title="复制字段与标签,评论/附件/依赖不随行">
+            {copying ? '复制中…' : '复制'}
+          </button>
+          <button class="icon-btn danger" type="button" onclick={removeTask} disabled={deleting} title="逻辑删除,可在项目回收站恢复">
+            {deleting ? '删除中…' : '删除'}
           </button>
         </div>
-        {#if changeLogsOpen}
-          <div class="changelog-list">
-            {#each changeLogs as log (log.id)}
-              <div class="changelog-row">
-                <button class="changelog-head" type="button" onclick={() => (expandedLogId = expandedLogId === log.id ? null : log.id)}>
-                  <time>{new Date(log.created_at).toLocaleString('zh-CN')}</time>
-                  <span>{log.summary}</span>
-                  <small>{expandedLogId === log.id ? '−' : '+'}</small>
-                </button>
-                {#if expandedLogId === log.id && diffEntries(log).length}
-                  <dl class="changelog-diff">
-                    {#each diffEntries(log) as [field, value] (field)}
-                      <div>
-                        <dt>{fieldLabels[field] ?? field}</dt>
-                        <dd>{renderValue(value)}</dd>
-                      </div>
-                    {/each}
-                  </dl>
-                {/if}
-              </div>
-            {:else}
-              <div class="empty-inline">还没有变更记录。</div>
-            {/each}
-          </div>
+      </div>
+      <div class="meta-row">
+        <span class="status-pill cat-{currentStatus?.category ?? 'todo'}">
+          <i class="dot"></i>{currentStatus?.name ?? statusName(task.status_id)}
+        </span>
+        <span class="meta-item">
+          <Avatar name={task.assignee_name ?? '?'} size={20} />
+          <span class="name">{task.assignee_name ?? '未分配'}</span> 负责
+        </span>
+        <span class="meta-item">
+          <Avatar name={task.reviewer_name ?? '?'} size={20} />
+          <span class="name">{task.reviewer_name ?? '未设置'}</span> 评审
+        </span>
+        {#if task.due_at}
+          <span class="meta-item" class:overdue={isOverdue}>截止 {new Date(task.due_at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</span>
         {/if}
+        <span class="meta-item mono">#{task.task_number}</span>
+        <span class="meta-item">更新于 {fmtTime(task.updated_at)}</span>
       </div>
-      <div class="subtask-heading">
-        <div><h2>子任务</h2><p>子任务不能再创建子任务。</p></div>
-        <span>{subtasks.length} 项 · 已完成 {doneSubtasks}</span>
-      </div>
-      <div class="subtask-list">
-        {#each subtasks as subtask}
-          <a href={`/tasks/${subtask.task_key}`}>
-            <span class="task-key">{subtask.task_key}</span>
-            <strong>{subtask.title}</strong>
-            <span class="status-pill">{statusName(subtask.status_id)}</span>
-            <TaskTypePill taskType={subtask.task_type} />
-          </a>
-        {:else}
-          <div class="empty-inline">还没有子任务。</div>
-        {/each}
-      </div>
-      <button class="secondary-button add-subtask-button" type="button" disabled={submitting} onclick={openSubtaskModal}>
-        添加子任务
-      </button>
-      <div class="comments">
-        <div class="subtask-heading">
-          <div><h2>评论</h2><p>评论新增和逻辑删除都会写入操作日志。</p></div>
-          <span>{comments.length} 条</span>
-        </div>
-        <div class="comment-list">
-          {#each comments as comment}
-            <article>
-              <div class="comment-meta">
-                <strong>{comment.author_name}</strong>
-                <time>{new Date(comment.created_at).toLocaleString('zh-CN')}</time>
-                <button class="text-button" onclick={() => removeComment(comment)}>删除</button>
+      {#if errorMessage}<div class="error-banner" role="alert">{errorMessage}</div>{/if}
+    </header>
+
+    <div class="layout">
+      <main>
+        <section class="block">
+          <div class="block-head"><h2>描述</h2></div>
+          {#if editingDesc}
+            <div class="desc-editor">
+              <textarea
+                bind:value={descDraft}
+                bind:this={descInputEl}
+                rows="6"
+                aria-label="任务描述"
+                placeholder="补充背景、范围或验收标准"
+                onkeydown={(event) => {
+                  if (event.key === 'Escape') editingDesc = false;
+                }}
+              ></textarea>
+              <div class="desc-editor-actions">
+                <button class="secondary-button" type="button" onclick={() => (editingDesc = false)}>取消</button>
+                <button class="primary-button" type="button" onclick={() => void commitDesc()}>保存</button>
               </div>
-              <p>{@html renderComment(comment.body)}</p>
-              {#if comment.attachments?.length}
-                <div class="comment-images">
-                  {#each comment.attachments as item}
-                    <a href={attachmentUrl(item.url)} target="_blank" rel="noreferrer" title={item.file_name}>
-                      <img src={attachmentUrl(item.url)} alt={item.file_name} loading="lazy" />
-                    </a>
-                  {/each}
-                </div>
-              {/if}
-            </article>
+            </div>
+          {:else if task.description}
+            <p class="desc-body">{task.description}</p>
+            <button class="ghost edit-trigger" type="button" onclick={startEditDesc}>编辑描述</button>
           {:else}
-            <div class="empty-inline">还没有评论。</div>
-          {/each}
-        </div>
-        <form class="comment-form" onsubmit={addComment}>
-          {#if pending.length}
-            <div class="pending-images">
-              {#each pending as item}
-                <span class="pending-image">
-                  <img src={attachmentUrl(item.url)} alt={item.file_name} />
-                  <button class="text-button" type="button" aria-label={`移除 ${item.file_name}`} onclick={() => removePending(item)}>×</button>
-                </span>
+            <button class="ghost" type="button" onclick={startEditDesc}>＋ 添加描述</button>
+          {/if}
+        </section>
+
+        <section class="block">
+          <div class="block-head">
+            <h2>子任务</h2>
+            {#if subtasks.length}<span class="count">{doneSubtasks} / {subtasks.length}</span>{/if}
+            <span class="spacer"></span>
+            <button class="ghost" type="button" onclick={openSubtaskModal} disabled={submitting}>＋ 新建子任务</button>
+          </div>
+          {#if subtasks.length}
+            <div class="subtask-progress">
+              <span class="bar"><i style="width: {subtaskProgress}%"></i></span>
+              <span class="ratio">{subtaskProgress}%</span>
+            </div>
+            <div class="subtask-list">
+              {#each subtasks as subtask (subtask.id)}
+                <div class="subtask" class:done={subtaskDone(subtask)}>
+                  <span class="checkbox" class:checked={subtaskDone(subtask)} aria-hidden="true">{subtaskDone(subtask) ? '✓' : ''}</span>
+                  <a class="title" href={`/tasks/${subtask.task_key}`} title={subtask.title}>{subtask.title}</a>
+                  <span class="status-name">{statusName(subtask.status_id)}</span>
+                </div>
               {/each}
             </div>
           {/if}
-          <textarea bind:value={commentBody} rows="3" placeholder="写下你的评论" aria-label="评论内容"></textarea>
-          <div class="comment-actions">
-            <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden bind:this={commentFileInput} onchange={(event) => uploadImages(event, 'pending')} />
-            <button class="secondary-button" type="button" disabled={uploading} onclick={() => commentFileInput?.click()}>
-              {uploading ? '上传中…' : '添加图片'}
+          <form class="add-inline" onsubmit={quickAddSubtask}>
+            <input bind:value={quickSubtaskTitle} placeholder="输入子任务标题,回车创建" aria-label="快捷创建子任务" disabled={submitting} />
+          </form>
+        </section>
+
+        <section class="block">
+          <div class="block-head">
+            <h2>附件</h2>
+            {#if attachments.length}<span class="count">{attachments.length}</span>{/if}
+            <span class="spacer"></span>
+            <input type="file" multiple hidden bind:this={taskFileInput} onchange={(event) => uploadImages(event, 'task')} />
+            <button class="ghost" type="button" disabled={uploading} onclick={() => taskFileInput?.click()}>
+              {uploading ? '上传中…' : '＋ 上传附件'}
             </button>
-            <button class="primary-button" type="submit" disabled={submitting}>发表评论</button>
           </div>
-        </form>
-      </div>
-    </section>
-    <aside class="workspace-card side-card">
-      <h2>任务归属</h2>
-      {#if parentTask}
-        <p class="parent-line">
-          当前是 <a href={`/tasks/${parentTask.task_key}`}>{parentTask.task_key}</a> 的子任务,
-          脱离后转回主任务,看板与列表不再显示父任务标识。
-        </p>
-        <button class="secondary-button" type="button" onclick={() => changeParent(null)} disabled={reparenting}>
-          {reparenting ? '处理中…' : '脱离父任务'}
-        </button>
-      {:else}
-        <p>挂靠后成为所选任务的子任务,在看板卡片与列表行显示「↳ 父任务」标识。</p>
-        <select bind:value={attachParentId} disabled={reparenting} aria-label="选择父任务">
-          <option value="">选择要挂靠的任务</option>
-          {#each rootTasks as root (root.id)}
-            {#if root.id !== task.id}
-              <option value={root.id}>{root.task_key} · {root.title}</option>
+          {#if attachments.some((item) => item.mime_type.startsWith('image/'))}
+            <div class="attachment-grid">
+              {#each attachments.filter((item) => item.mime_type.startsWith('image/')) as item (item.id)}
+                <figure>
+                  <a href={attachmentUrl(item.url)} target="_blank" rel="noreferrer">
+                    <img src={attachmentUrl(item.url)} alt={item.file_name} loading="lazy" />
+                  </a>
+                  <figcaption>
+                    <span title={item.file_name}>{item.file_name}</span>
+                    <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
+                  </figcaption>
+                </figure>
+              {/each}
+            </div>
+          {/if}
+          {#if attachments.some((item) => !item.mime_type.startsWith('image/'))}
+            <div class="file-list">
+              {#each attachments.filter((item) => !item.mime_type.startsWith('image/')) as item (item.id)}
+                <div class="file-row">
+                  <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name}>
+                    <span class="file-icon" aria-hidden="true">▤</span>
+                    <span class="file-title">{item.file_name}</span>
+                    <small>{(item.byte_size / 1024).toFixed(0)} KB</small>
+                  </a>
+                  <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+          {#if !attachments.length}
+            <p class="block-hint">图片直接预览,其他文件下载查看,单个不超过 10MB。</p>
+          {/if}
+        </section>
+
+        <section class="block">
+          <div class="block-head"><h2>活动</h2></div>
+          <div class="tabs" role="tablist" aria-label="活动过滤">
+            <button class="tab" class:active={activityTab === 'all'} role="tab" aria-selected={activityTab === 'all'} type="button" onclick={() => (activityTab = 'all')}>全部</button>
+            <button class="tab" class:active={activityTab === 'comments'} role="tab" aria-selected={activityTab === 'comments'} type="button" onclick={() => (activityTab = 'comments')}>评论<span class="n">{comments.length}</span></button>
+            <button class="tab" class:active={activityTab === 'changes'} role="tab" aria-selected={activityTab === 'changes'} type="button" onclick={() => (activityTab = 'changes')}>变更记录<span class="n">{changeLogs.length}</span></button>
+          </div>
+
+          <form class="composer" onsubmit={addComment}>
+            {#if pending.length}
+              <div class="pending-images">
+                {#each pending as item (item.id)}
+                  <span class="pending-image">
+                    <img src={attachmentUrl(item.url)} alt={item.file_name} />
+                    <button class="text-button" type="button" aria-label={`移除 ${item.file_name}`} onclick={() => removePending(item)}>×</button>
+                  </span>
+                {/each}
+              </div>
             {/if}
-          {/each}
-        </select>
-        <button
-          class="secondary-button"
-          type="button"
-          disabled={reparenting || !attachParentId}
-          onclick={() => attachParentId && changeParent(attachParentId)}
-        >
-          {reparenting ? '处理中…' : '设为子任务'}
-        </button>
-      {/if}
-      <h2>依赖</h2>
-      {#if dependencies}
-        {#if blockedByIncomplete.length}
-          <p class="dependency-hint">还有 {blockedByIncomplete.length} 个未完成的任务阻塞当前任务。</p>
-        {/if}
-        <div class="dependency-groups">
-          <div>
-            <span class="field-label">阻塞我</span>
-            {#each dependencies.blocked_by as item (item.dependency_id)}
-              <div class="dependency-row">
-                <a href={`/tasks/${item.task_key}`} class:done={item.is_done}>
-                  <span class="task-key">{item.task_key}</span>
-                  <span class="dep-title">{item.title}</span>
-                  <span class="status-pill">{item.status_name}</span>
-                </a>
-                <button class="text-button" type="button" disabled={dependencyBusy} onclick={() => detachDependency(item.dependency_id)}>移除</button>
-              </div>
+            <textarea bind:value={commentBody} rows="3" placeholder="添加评论…支持 @提及项目成员" aria-label="评论内容"></textarea>
+            <div class="composer-foot">
+              <span class="hint">@名字 会给对方发站内通知</span>
+              <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden bind:this={commentFileInput} onchange={(event) => uploadImages(event, 'pending')} />
+              <button class="secondary-button" type="button" disabled={uploading} onclick={() => commentFileInput?.click()}>
+                {uploading ? '上传中…' : '添加图片'}
+              </button>
+              <button class="primary-button" type="submit" disabled={submitting}>评论</button>
+            </div>
+          </form>
+
+          <div class="feed">
+            {#each visibleFeed as item (item.kind === 'comment' ? item.comment.id : item.log.id)}
+              {#if item.kind === 'comment'}
+                <article class="event">
+                  <span class="glyph comment-glyph"><Avatar name={item.comment.author_name} size={22} /></span>
+                  <div class="body">
+                    <div class="head">
+                      <strong>{item.comment.author_name}</strong>
+                      <span class="tag">评论</span>
+                      <time>{fmtTime(item.comment.created_at)}</time>
+                      <button class="text-button" type="button" onclick={() => removeComment(item.comment)}>删除</button>
+                    </div>
+                    <p class="content">{@html renderComment(item.comment.body)}</p>
+                    {#if item.comment.attachments?.length}
+                      <div class="comment-images">
+                        {#each item.comment.attachments as attachment (attachment.id)}
+                          <a href={attachmentUrl(attachment.url)} target="_blank" rel="noreferrer" title={attachment.file_name}>
+                            <img src={attachmentUrl(attachment.url)} alt={attachment.file_name} loading="lazy" />
+                          </a>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                </article>
+              {:else}
+                <article class="event">
+                  <span class="glyph" aria-hidden="true">↻</span>
+                  <div class="body">
+                    <div class="head">
+                      <strong>{actorName(item.log)}</strong>
+                      <span class="event-text" title={item.log.summary}>{item.log.summary}</span>
+                      <span class="tag">变更</span>
+                      <time>{fmtTime(item.log.created_at)}</time>
+                    </div>
+                    {#if diffEntries(item.log).length}
+                      <div class="detail">
+                        {#each diffEntries(item.log) as [field, value] (field)}
+                          <span><b>{fieldLabels[field] ?? field}</b>{renderValue(value)}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                </article>
+              {/if}
             {:else}
-              <p class="empty-inline">无。</p>
+              <p class="block-hint">还没有相关活动。</p>
             {/each}
           </div>
-          <div>
-            <span class="field-label">我阻塞</span>
-            {#each dependencies.blocks as item (item.dependency_id)}
-              <div class="dependency-row">
-                <a href={`/tasks/${item.task_key}`} class:done={item.is_done}>
-                  <span class="task-key">{item.task_key}</span>
-                  <span class="dep-title">{item.title}</span>
-                  <span class="status-pill">{item.status_name}</span>
-                </a>
-                <button class="text-button" type="button" disabled={dependencyBusy} onclick={() => detachDependency(item.dependency_id)}>移除</button>
-              </div>
-            {:else}
-              <p class="empty-inline">无。</p>
-            {/each}
+        </section>
+      </main>
+
+      <aside>
+        <div class="panel">
+          <div class="panel-title">
+            属性
+            <span class="info tooltip" data-tip="点击即改、失焦即存;负责人/评审人/排期改动立即生效,并记入活动流。">i</span>
           </div>
+          <div class="props">
+            <label class="prop">
+              <span class="prop-label">状态</span>
+              <span class="prop-value">
+                <select value={task.status_id} onchange={changeStatus} disabled={!statusControl.canChange || submitting} aria-label="任务状态" title={statusControl.canChange ? '' : '仅负责人或评审人可变更状态'}>
+                  {#each statusControl.options as status (status.id)}
+                    <option value={status.id}>{status.name}</option>
+                  {/each}
+                  {#if !statusControl.options.length}
+                    <option value={task.status_id}>{statusName(task.status_id)}</option>
+                  {/if}
+                </select>
+              </span>
+            </label>
+            <div class="prop">
+              <span class="prop-label">负责人</span>
+              <span class="prop-value picker">
+                <MemberPicker
+                  value={task.assignee_id}
+                  {members}
+                  disabled={propBusy}
+                  onchange={(value) => saveField({ assignee_id: value })}
+                  ariaLabel="设置负责人"
+                />
+              </span>
+            </div>
+            <div class="prop">
+              <span class="prop-label">评审人</span>
+              <span class="prop-value picker">
+                <MemberPicker
+                  value={task.reviewer_id}
+                  {members}
+                  disabled={propBusy}
+                  onchange={(value) => saveField({ reviewer_id: value })}
+                  ariaLabel="设置评审人"
+                />
+              </span>
+            </div>
+            <label class="prop">
+              <span class="prop-label">类型</span>
+              <span class="prop-value">
+                <select value={task.task_type} onchange={(event) => saveField({ task_type: (event.currentTarget as HTMLSelectElement).value })} disabled={propBusy} aria-label="任务类型">
+                  {#each taskTypeOptions as option (option.value)}
+                    <option value={option.value}>{option.label}</option>
+                  {/each}
+                </select>
+              </span>
+            </label>
+            <label class="prop">
+              <span class="prop-label">优先级</span>
+              <span class="prop-value">
+                <select value={task.priority} onchange={(event) => saveField({ priority: (event.currentTarget as HTMLSelectElement).value as Priority })} disabled={propBusy} aria-label="优先级">
+                  {#each priorityOptions as option (option.value)}
+                    <option value={option.value}>{option.label}</option>
+                  {/each}
+                </select>
+              </span>
+            </label>
+            <label class="prop">
+              <span class="prop-label">里程碑</span>
+              <span class="prop-value">
+                <select
+                  value={task.milestone_id ?? ''}
+                  onchange={(event) => {
+                    const next = (event.currentTarget as HTMLSelectElement).value;
+                    void saveField({ milestone_id: next || null });
+                  }}
+                  disabled={propBusy}
+                  aria-label="关联里程碑"
+                >
+                  <option value="">未关联</option>
+                  {#each milestones as milestone (milestone.id)}
+                    <option value={milestone.id}>{milestone.name}{milestone.due_date ? ` · ${milestone.due_date}` : ''}</option>
+                  {/each}
+                </select>
+              </span>
+            </label>
+            <div class="prop prop-labels">
+              <span class="prop-label">标签</span>
+              <span class="prop-value wrap">
+                {#if task.labels.length}
+                  {#each task.labels as label (label.id)}
+                    <LabelPill name={label.name} onremove={labelBusy ? undefined : () => detachLabel(label.id)} />
+                  {/each}
+                {/if}
+                {#if addLabelOpen}
+                  <form class="label-form" onsubmit={submitLabel}>
+                    <input bind:value={labelInput} placeholder="标签名,回车添加" aria-label="新标签名称" disabled={labelBusy} />
+                  </form>
+                  {#if labels.length}
+                    <div class="label-suggestions">
+                      {#each labels.filter((label) => !task!.labels.some((item) => item.id === label.id)) as label (label.id)}
+                        <button class="label-suggest" type="button" disabled={labelBusy} onclick={() => (labelInput = label.name)}>+ {label.name}</button>
+                      {/each}
+                    </div>
+                  {/if}
+                {:else}
+                  <button class="add-link" type="button" onclick={() => (addLabelOpen = true)}>＋ 添加</button>
+                {/if}
+              </span>
+            </div>
+            <label class="prop">
+              <span class="prop-label">开始</span>
+              <span class="prop-value">
+                <input
+                  class="date-input"
+                  type="datetime-local"
+                  value={task.start_at ? isoToLocalInput(task.start_at) : ''}
+                  onchange={(event) => commitDate('start_at', event)}
+                  disabled={propBusy}
+                  aria-label="开始时间"
+                />
+              </span>
+            </label>
+            <label class="prop">
+              <span class="prop-label">截止</span>
+              <span class="prop-value">
+                <input
+                  class="date-input"
+                  type="datetime-local"
+                  value={task.due_at ? isoToLocalInput(task.due_at) : ''}
+                  onchange={(event) => commitDate('due_at', event)}
+                  disabled={propBusy}
+                  aria-label="截止时间"
+                />
+              </span>
+            </label>
+          </div>
+          <div class="panel-foot">字段改动会记入活动流</div>
         </div>
-        <form class="dependency-form" onsubmit={submitDependency}>
-          <select bind:value={dependencyTarget} disabled={dependencyBusy} aria-label="选择依赖任务">
-            <option value="">选择要依赖的任务</option>
-            {#each dependencyOptions as option (option.id)}
-              <option value={option.task_key}>{option.task_key} · {option.title}</option>
-            {/each}
-          </select>
-          <button class="secondary-button" type="submit" disabled={dependencyBusy || !dependencyTarget}>
-            {dependencyBusy ? '处理中…' : '添加依赖'}
-          </button>
-        </form>
-        <p class="dependency-note">依赖仅支持同项目任务,系统会阻止自依赖与循环依赖。</p>
-      {/if}
-      <h2>操作</h2>
-      <p>复制会带出字段与标签，评论、附件与依赖不随行；删除采用逻辑删除，动作会写入项目操作日志。</p>
-      <button class="secondary-button" type="button" onclick={duplicateTask} disabled={copying}>
-        {copying ? '复制中…' : '复制任务'}
-      </button>
-      <button class="danger-button" type="button" onclick={removeTask} disabled={deleting}>{deleting ? '删除中…' : '逻辑删除任务'}</button>
-      {#if errorMessage}<p class="error-message">{errorMessage}</p>{/if}
-    </aside>
+
+        <div class="panel">
+          <div class="panel-title">
+            依赖
+            <span class="info tooltip" data-tip="仅支持同项目任务;系统会阻止自依赖与循环依赖。">i</span>
+          </div>
+          {#if dependencies}
+            {#if blockedByIncomplete.length}
+              <p class="dep-warning">还有 {blockedByIncomplete.length} 个未完成的依赖阻塞当前任务。</p>
+            {/if}
+            <div class="dep-list">
+              <div class="dep-group">
+                <span class="dep-dir">阻塞我</span>
+                {#each dependencies.blocked_by as item (item.dependency_id)}
+                  <div class="dep-row">
+                    <a href={`/tasks/${item.task_key}`} class:done={item.is_done} title={item.title}>
+                      <code>{item.task_key}</code>
+                      <span class="dep-title">{item.title}</span>
+                      <em>{item.status_name}</em>
+                    </a>
+                    <button class="text-button" type="button" disabled={dependencyBusy} onclick={() => detachDependency(item.dependency_id)}>移除</button>
+                  </div>
+                {:else}
+                  <span class="dep-empty">无</span>
+                {/each}
+              </div>
+              <div class="dep-group">
+                <span class="dep-dir">我阻塞</span>
+                {#each dependencies.blocks as item (item.dependency_id)}
+                  <div class="dep-row">
+                    <a href={`/tasks/${item.task_key}`} class:done={item.is_done} title={item.title}>
+                      <code>{item.task_key}</code>
+                      <span class="dep-title">{item.title}</span>
+                      <em>{item.status_name}</em>
+                    </a>
+                    <button class="text-button" type="button" disabled={dependencyBusy} onclick={() => detachDependency(item.dependency_id)}>移除</button>
+                  </div>
+                {:else}
+                  <span class="dep-empty">无</span>
+                {/each}
+              </div>
+            </div>
+            {#if addDepOpen}
+              <select class="dep-select" bind:value={dependencyTarget} onchange={pickDependency} disabled={dependencyBusy} aria-label="选择依赖任务">
+                <option value="">选择要依赖的任务…</option>
+                {#each dependencyOptions as option (option.id)}
+                  <option value={option.task_key}>{option.task_key} · {option.title}</option>
+                {/each}
+              </select>
+            {:else}
+              <button class="ghost panel-ghost" type="button" onclick={() => (addDepOpen = true)}>＋ 添加依赖</button>
+            {/if}
+          {/if}
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">
+            任务归属
+            <span class="info tooltip" data-tip="挂靠后成为所选任务的子任务,在看板卡片与列表行显示「↳ 父任务」标识;子任务不能再挂靠。">i</span>
+          </div>
+          {#if parentTask}
+            <div class="dep-list">
+              <div class="dep-group">
+                <span class="dep-dir">父任务</span>
+                <a class="dep-row parent-link" href={`/tasks/${parentTask.task_key}`}>
+                  <code>{parentTask.task_key}</code>
+                  <span class="dep-title">{parentTask.title}</span>
+                </a>
+              </div>
+            </div>
+            <button class="ghost panel-ghost" type="button" onclick={() => changeParent(null)} disabled={reparenting}>
+              {reparenting ? '处理中…' : '脱离父任务'}
+            </button>
+          {:else if addParentOpen}
+            <select
+              class="dep-select"
+              bind:value={attachParentId}
+              disabled={reparenting}
+              aria-label="选择父任务"
+              onchange={(event) => {
+                const next = (event.currentTarget as HTMLSelectElement).value;
+                if (next) void changeParent(next);
+              }}
+            >
+              <option value="">选择要挂靠的任务…</option>
+              {#each rootTasks as root (root.id)}
+                {#if root.id !== task.id}
+                  <option value={root.id}>{root.task_key} · {root.title}</option>
+                {/if}
+              {/each}
+            </select>
+          {:else}
+            <button class="ghost panel-ghost" type="button" onclick={() => (addParentOpen = true)}>＋ 设为子任务</button>
+          {/if}
+        </div>
+      </aside>
+    </div>
   </div>
 {/if}
 
@@ -902,45 +1153,204 @@
 </Modal>
 
 <style>
-  h2, p { margin: 0; }
-  .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 18px; }
-  .main-card { display: grid; gap: 24px; }
-  .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--color-border); }
-  .field-grid > div { display: grid; gap: 7px; min-width: 0; }
-  .field-label { color: var(--color-text-muted); font-size: 12px; font-weight: 500; }
-  .flow-hint { color: var(--color-text-muted); font-size: 11px; }
-  .field-grid select { min-width: 0; }
-  .priority { color: var(--color-warning); }
+  .task-page { display: grid; gap: 18px; }
+
+  /* ── 面包屑与头部 ── */
+  .breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-muted); }
+  .breadcrumb a { color: var(--color-text-muted); }
+  .breadcrumb a:hover { color: var(--color-text); text-decoration: none; }
+  .task-header { display: grid; gap: 10px; }
+  .title-row { display: flex; align-items: flex-start; gap: 12px; }
+  .task-title {
+    flex: 1; min-width: 0;
+    margin: 0; padding: 2px 6px; margin-left: -6px;
+    border: 0; background: transparent; text-align: left;
+    font-family: inherit; font-size: 22px; font-weight: 600; line-height: 1.35;
+    color: var(--color-text); cursor: text;
+    border-radius: var(--radius-sm);
+  }
+  .task-title:hover { background: var(--color-hover); }
+  .task-title:focus-visible { outline: none; box-shadow: var(--color-focus-ring); }
+  .title-input {
+    flex: 1; min-width: 0; padding: 2px 6px;
+    font-size: 22px; font-weight: 600; line-height: 1.35;
+    border: 1px solid var(--color-primary); border-radius: var(--radius-sm);
+    background: var(--color-surface); color: var(--color-text);
+    box-shadow: var(--color-focus-ring);
+  }
+  .header-actions { display: flex; gap: 8px; flex: none; }
+  .icon-btn {
+    padding: 6px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md);
+    background: var(--color-surface); color: var(--color-text-secondary); font-size: 12px;
+    transition: border-color var(--transition-fast), color var(--transition-fast);
+  }
+  .icon-btn:hover { border-color: var(--color-border-strong); color: var(--color-text); }
+  .icon-btn.danger:hover { border-color: var(--color-danger); color: var(--color-danger); }
+  .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .meta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 13px; color: var(--color-text-muted); }
+  .meta-item { display: inline-flex; align-items: center; gap: 6px; }
+  .meta-item .name { color: var(--color-text-secondary); }
+  .meta-item.overdue { color: var(--color-danger); font-weight: 500; }
   .mono { font-family: var(--font-mono); }
-  .description-block { display: grid; gap: 8px; }
-  .description-block p { white-space: pre-wrap; color: var(--color-text-secondary); line-height: 1.7; }
-  .labels-block { display: grid; gap: 8px; }
-  .label-list { display: flex; flex-wrap: wrap; gap: 6px; }
-  .label-form { display: flex; gap: 8px; }
-  .label-form input { flex: 1; min-width: 0; }
-  .label-form button { border: 0; white-space: nowrap; }
-  .label-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
-  .label-suggest { color: var(--color-primary-strong); }
-  .dependency-groups { display: grid; gap: 12px; }
-  .dependency-groups > div { display: grid; gap: 4px; }
-  .dependency-hint { color: var(--color-warning); }
-  .dependency-row { display: flex; align-items: center; gap: 8px; }
-  .dependency-row > a { display: grid; grid-template-columns: 90px minmax(0, 1fr) auto; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--color-text); text-decoration: none; font-size: 13px; }
-  .dependency-row > a:hover .dep-title { color: var(--color-primary); }
-  .dependency-row .dep-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dependency-row a.done { opacity: 0.55; }
-  .dependency-form { display: grid; gap: 8px; }
-  .dependency-note { color: var(--color-text-muted); font-size: 12px; }
-  .subtask-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
-  .subtask-heading h2, .side-card h2 { font-size: 18px; }
-  .subtask-heading p, .side-card p { margin-top: 5px; color: var(--color-text-muted); font-size: 13px; }
-  .subtask-heading > span { color: var(--color-text-muted); font-size: 13px; }
+  .status-pill { display: inline-flex; align-items: center; gap: 7px; padding: 2px 10px; border-radius: 999px; font-size: 12px; }
+  .status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); }
+  .status-pill.cat-todo { background: var(--color-hover); color: var(--color-text-secondary); }
+  .status-pill.cat-in_progress { background: var(--color-primary-soft); color: var(--color-primary-strong); }
+  .status-pill.cat-in_progress .dot { background: var(--color-primary); }
+  .status-pill.cat-done { background: color-mix(in srgb, var(--color-success) 12%, transparent); color: var(--color-success); }
+  .status-pill.cat-done .dot { background: var(--color-success); }
+  .error-banner { padding: 8px 12px; border: 1px solid var(--color-danger); border-left-width: 3px; border-radius: var(--radius-md); color: var(--color-danger); font-size: 13px; }
+
+  /* ── 双栏布局 ── */
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: start; }
+
+  /* ── 主栏区块 ── */
+  .block { padding: 18px 0; border-top: 1px solid var(--color-border-weak); }
+  .block:first-child { border-top: 0; padding-top: 0; }
+  .block-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+  .block-head h2 { font-size: 13px; font-weight: 600; color: var(--color-text-secondary); letter-spacing: 0.02em; }
+  .block-head .count { font-size: 12px; color: var(--color-text-muted); font-family: var(--font-mono); }
+  .block-head .spacer { flex: 1; }
+  .block-hint { color: var(--color-text-muted); font-size: 12px; }
+
+  .ghost {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border: 1px dashed var(--color-border); border-radius: var(--radius-sm);
+    color: var(--color-text-muted); font-size: 12px;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+  }
+  .ghost:hover { color: var(--color-primary-strong); border-color: var(--color-primary); }
+  .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+  .edit-trigger { margin-top: 8px; }
+
+  .desc-body { color: var(--color-text-secondary); font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+  .desc-editor { display: grid; gap: 8px; }
+  .desc-editor textarea { width: 100%; resize: vertical; }
+  .desc-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+  .subtask-progress { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .subtask-progress .bar { width: 180px; height: 4px; border-radius: 2px; background: var(--color-hover); overflow: hidden; }
+  .subtask-progress .bar i { display: block; height: 100%; background: var(--color-success); }
+  .subtask-progress .ratio { font-size: 12px; color: var(--color-text-muted); font-family: var(--font-mono); }
   .subtask-list { display: grid; }
-  .subtask-list > a { display: grid; grid-template-columns: 105px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid var(--color-border); }
-  .subtask-list > a:hover strong { color: var(--color-primary); }
-  .task-key { color: var(--color-primary-strong); font-family: var(--font-mono); font-size: 12px; }
-  .empty-inline { padding: 12px 0; color: var(--color-text-muted); font-size: 13px; }
-  .add-subtask-button { justify-self: start; border: 0; }
+  .subtask { display: flex; align-items: center; gap: 10px; padding: 7px 8px; margin: 0 -8px; border-radius: var(--radius-sm); font-size: 13px; }
+  .subtask:hover { background: var(--color-hover); }
+  .subtask .checkbox { width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid var(--color-text-muted); display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 10px; flex: none; }
+  .subtask .checkbox.checked { background: var(--color-success); border-color: var(--color-success); }
+  .subtask .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text); text-decoration: none; }
+  .subtask:hover .title { color: var(--color-primary); }
+  .subtask.done .title { color: var(--color-text-muted); text-decoration: line-through; }
+  .subtask .status-name { font-size: 12px; color: var(--color-text-muted); flex: none; }
+  .add-inline { margin-top: 6px; }
+  .add-inline input { width: 100%; padding: 7px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-sunken); color: var(--color-text); font-size: 13px; }
+  .add-inline input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--color-focus-ring); }
+
+  .attachment-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 10px; }
+  .attachment-grid figure { display: grid; gap: 6px; min-width: 0; margin: 0; }
+  .attachment-grid img, .comment-images img, .pending-images img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .attachment-grid a { display: block; aspect-ratio: 4 / 3; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; background: var(--color-surface-sunken); }
+  .attachment-grid a:hover { border-color: var(--color-border-strong); }
+  .attachment-grid figcaption { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--color-text-muted); }
+  .attachment-grid figcaption span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-list { display: grid; gap: 6px; margin-bottom: 10px; }
+  .file-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); font-size: 13px; }
+  .file-name { display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--color-text); text-decoration: none; }
+  .file-name:hover .file-title { color: var(--color-primary); }
+  .file-icon { color: var(--color-text-muted); }
+  .file-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-name small { flex: none; color: var(--color-text-muted); font-size: 12px; }
+  .text-button { border: 0; background: transparent; color: var(--color-danger); font-size: 12px; font-weight: 500; cursor: pointer; }
+  .text-button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── 活动流 ── */
+  .tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--color-border-weak); }
+  .tab { padding: 6px 12px 8px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: transparent; color: var(--color-text-muted); font-size: 13px; border-radius: var(--radius-sm) var(--radius-sm) 0 0; cursor: pointer; }
+  .tab:hover { color: var(--color-text-secondary); }
+  .tab.active { color: var(--color-text); border-bottom-color: var(--color-text); font-weight: 500; }
+  .tab .n { font-size: 11px; color: var(--color-text-muted); margin-left: 4px; font-family: var(--font-mono); }
+  .composer { display: grid; gap: 8px; margin-bottom: 18px; }
+  .composer textarea { width: 100%; resize: vertical; }
+  .composer-foot { display: flex; align-items: center; gap: 10px; }
+  .composer-foot .hint { font-size: 12px; color: var(--color-text-muted); flex: 1; }
+  .composer-foot .secondary-button, .composer-foot .primary-button { border: 0; }
+  .pending-images { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pending-image { position: relative; display: block; width: 96px; height: 72px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
+  .pending-image button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 14px; border-radius: var(--radius-sm); }
+  .feed { display: grid; gap: 2px; }
+  .event { display: flex; gap: 12px; padding: 9px 8px; margin: 0 -8px; border-radius: var(--radius-sm); }
+  .event:hover { background: var(--color-hover); }
+  .event .glyph { flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; background: var(--color-hover); color: var(--color-text-muted); overflow: hidden; }
+  .event .glyph.comment-glyph { background: transparent; overflow: visible; }
+  .event .body { flex: 1; min-width: 0; font-size: 13px; }
+  .event .head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .event .head strong { font-weight: 500; color: var(--color-text-secondary); flex: none; }
+  .event .head .event-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-secondary); }
+  .event .head time { font-size: 12px; color: var(--color-text-muted); margin-left: auto; flex: none; }
+  .event .head .tag { flex: none; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
+  .event .content { margin: 4px 0 0; white-space: pre-wrap; color: var(--color-text-secondary); line-height: 1.6; }
+  .event .content :global(.mention) { padding: 0 2px; border-radius: var(--radius-sm); background: var(--color-primary-soft); color: var(--color-primary-strong); font-weight: 500; }
+  .comment-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .comment-images a { display: block; width: 96px; height: 72px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
+  .comment-images a:hover { border-color: var(--color-border-strong); }
+  .event .detail { display: grid; gap: 3px; margin-top: 6px; width: fit-content; max-width: 100%; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--color-surface-sunken); font-family: var(--font-mono); font-size: 12px; color: var(--color-text-muted); }
+  .event .detail b { color: var(--color-text-secondary); font-weight: 500; }
+  .event .detail b::after { content: '：'; }
+
+  /* ── 侧栏面板 ── */
+  .panel { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); overflow: hidden; }
+  .panel + .panel { margin-top: 14px; }
+  .panel-title { display: flex; align-items: center; gap: 6px; padding: 12px 14px 10px; border-bottom: 1px solid var(--color-border-weak); font-size: 12px; font-weight: 600; color: var(--color-text-secondary); letter-spacing: 0.04em; }
+  .panel-title .info { margin-left: auto; cursor: help; color: var(--color-text-muted); font-weight: 500; font-style: italic; font-family: var(--font-mono); }
+  .tooltip { position: relative; display: inline-flex; }
+  .tooltip::after {
+    content: attr(data-tip);
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 5;
+    width: 220px; padding: 8px 10px; border-radius: var(--radius-sm);
+    background: var(--color-surface-sunken); border: 1px solid var(--color-border);
+    color: var(--color-text-muted); font-size: 12px; font-weight: 400; letter-spacing: 0;
+    line-height: 1.5; text-align: left; white-space: normal;
+    opacity: 0; visibility: hidden; transition: opacity var(--transition-fast);
+    pointer-events: none;
+  }
+  .tooltip:hover::after { opacity: 1; visibility: visible; }
+  .props { display: grid; }
+  .prop { display: flex; align-items: center; gap: 10px; padding: 7px 14px; font-size: 13px; }
+  .prop:hover { background: var(--color-hover); }
+  .prop-label { flex: none; width: 48px; color: var(--color-text-muted); font-size: 12px; }
+  .prop-value { flex: 1; min-width: 0; display: inline-flex; align-items: center; }
+  .prop-value.wrap { flex-wrap: wrap; gap: 6px; padding: 2px 0 6px; }
+  .prop select, .prop .date-input { width: 100%; min-width: 0; padding: 4px 8px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-text); font-size: 13px; }
+  .prop select:hover, .prop .date-input:hover { border-color: var(--color-border); background: var(--color-surface); }
+  .prop select:focus-visible, .prop .date-input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--color-focus-ring); }
+  .prop .picker { width: 100%; }
+  .prop .picker :global(.member-picker) { width: 100%; }
+  .prop .picker :global(select) { width: 100%; min-width: 0; padding: 4px 8px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-text); font-size: 13px; }
+  .prop .picker :global(.member-picker:hover select) { border-color: var(--color-border); background: var(--color-surface); }
+  .panel-foot { padding: 8px 14px 10px; border-top: 1px solid var(--color-border-weak); font-size: 11px; color: var(--color-text-muted); }
+  .label-form input { width: 110px; padding: 3px 8px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-text); font-size: 12px; }
+  .label-form input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--color-focus-ring); }
+  .label-suggestions { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
+  .label-suggest { border: 0; background: transparent; color: var(--color-primary-strong); font-size: 12px; cursor: pointer; }
+  .add-link { border: 0; background: transparent; color: var(--color-text-muted); font-size: 12px; cursor: pointer; padding: 0; }
+  .add-link:hover { color: var(--color-primary-strong); }
+
+  .dep-warning { margin: 10px 14px 0; color: var(--color-warning); font-size: 12px; }
+  .dep-list { padding: 8px 14px; display: grid; gap: 8px; }
+  .dep-group { display: grid; gap: 4px; min-width: 0; }
+  .dep-dir { color: var(--color-text-muted); font-size: 12px; }
+  .dep-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .dep-row > a { display: grid; grid-template-columns: 86px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; gap: 2px 8px; flex: 1; min-width: 0; color: var(--color-text); text-decoration: none; font-size: 13px; }
+  .dep-row > a code { font-family: var(--font-mono); font-size: 11px; color: var(--color-primary-strong); }
+  .dep-row .dep-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-muted); font-size: 12px; }
+  .dep-row > a em { grid-column: 2; font-style: normal; font-size: 11px; color: var(--color-success); }
+  .dep-row a.done { opacity: 0.55; }
+  .dep-row .text-button { font-size: 11px; }
+  .dep-empty { color: var(--color-text-muted); font-size: 12px; }
+  .dep-select, .panel-ghost { width: calc(100% - 28px); margin: 4px 14px 12px; }
+  .dep-select { padding: 6px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-sunken); color: var(--color-text); font-size: 12px; }
+  .panel-ghost { justify-content: center; margin-top: 10px; }
+
+  /* ── 子任务弹窗 ── */
   .subtask-modal-form { display: grid; gap: 14px; }
   .subtask-modal-form label, .subtask-images-field { display: grid; gap: 6px; }
   .subtask-modal-form label > span, .subtask-images-field > span { color: var(--color-text-secondary); font-size: 13px; font-weight: 500; }
@@ -953,72 +1363,16 @@
   .subtask-image-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
   .subtask-image-preview button { position: absolute; top: 2px; right: 2px; display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.65); color: #fff; cursor: pointer; }
   .subtask-images-field small { color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
-  .attachment-block { display: grid; gap: 12px; }
-  .attachment-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
-  .attachment-grid figure { display: grid; gap: 6px; min-width: 0; margin: 0; }
-  .attachment-grid img, .comment-images img, .pending-images img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .attachment-grid a { display: block; aspect-ratio: 4 / 3; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; background: var(--color-surface-sunken); }
-  .attachment-grid a:hover { border-color: var(--color-border-strong); }
-  .attachment-grid figcaption { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--color-text-muted); }
-  .attachment-grid figcaption span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .attach-button { justify-self: start; border: 0; }
-  .file-list { display: grid; gap: 6px; }
-  .file-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); font-size: 13px; }
-  .file-name { display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--color-text); text-decoration: none; }
-  .file-name:hover .file-title { color: var(--color-primary); }
-  .file-icon { color: var(--color-text-muted); }
-  .file-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .file-name small { flex: none; color: var(--color-text-muted); font-size: 12px; }
-  .changelog-block { display: grid; gap: 12px; }
-  .toggle-changelog { color: var(--color-primary-strong); white-space: nowrap; }
-  .changelog-list { display: grid; border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); }
-  .changelog-row { border-bottom: 1px solid var(--color-border-weak); }
-  .changelog-row:last-child { border-bottom: 0; }
-  .changelog-head { display: grid; grid-template-columns: 140px minmax(0, 1fr) 20px; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border: 0; background: transparent; color: var(--color-text); font-size: 13px; text-align: left; cursor: pointer; }
-  .changelog-head:hover { background: var(--color-hover); }
-  .changelog-head time { color: var(--color-text-muted); font-size: 12px; }
-  .changelog-head small { color: var(--color-text-muted); }
-  .changelog-diff { display: grid; gap: 6px; margin: 0; padding: 4px 12px 12px 30px; }
-  .changelog-diff > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; font-size: 12px; }
-  .changelog-diff dt { color: var(--color-text-muted); }
-  .changelog-diff dd { margin: 0; color: var(--color-text-secondary); word-break: break-all; }
-  .comment-list p :global(.mention) { padding: 0 2px; border-radius: var(--radius-sm); background: var(--color-primary-soft); color: var(--color-primary-strong); font-weight: 500; }
-  .comments { display: grid; gap: 12px; }
-  .comment-list { display: grid; gap: 10px; }
-  .comment-list article { padding: 12px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); }
-  .comment-meta { display: flex; align-items: center; gap: 10px; }
-  .comment-meta time { color: var(--color-text-muted); font-size: 12px; }
-  .comment-meta .text-button { margin-left: auto; }
-  .comment-list p { margin: 8px 0 0; white-space: pre-wrap; color: var(--color-text-secondary); line-height: 1.6; }
-  .comment-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .comment-images a { display: block; width: 96px; height: 72px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
-  .comment-images a:hover { border-color: var(--color-border-strong); }
-  .comment-form { display: grid; gap: 8px; }
-  .comment-form textarea { width: 100%; resize: vertical; }
-  .comment-actions { display: flex; justify-content: flex-end; gap: 8px; }
-  .comment-actions button { border: 0; }
-  .pending-images { display: flex; flex-wrap: wrap; gap: 8px; }
-  .pending-image { position: relative; display: block; width: 96px; height: 72px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
-  .pending-image button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; line-height: 1; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 14px; border-radius: var(--radius-sm); }
-  .text-button { border: 0; background: transparent; color: var(--color-danger); font-weight: 500; cursor: pointer; }
-  .side-card { display: grid; align-content: start; gap: 12px; height: max-content; }
-  .parent-line a { color: var(--color-primary-strong); font-family: var(--font-mono); font-size: 13px; }
-  .side-card select { width: 100%; }
-  .side-card .secondary-button, .side-card .danger-button { border: 0; }
-  .due-input { min-width: 0; }
-  .details-save-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); background: var(--color-surface-sunken); color: var(--color-text-muted); font-size: 12px; }
-  .details-save-bar button { border: 0; white-space: nowrap; }
   .error-message { color: var(--color-danger); font-size: 13px; }
+
   .state-box { display: grid; place-items: center; gap: 12px; min-height: 220px; }
   .error-state { color: var(--color-danger); }
   @media (max-width: 900px) {
-    .detail-grid { grid-template-columns: 1fr; }
+    .layout { grid-template-columns: 1fr; }
   }
   @media (max-width: 560px) {
-    .subtask-list > a { grid-template-columns: 1fr; gap: 5px; }
+    .title-row { flex-direction: column; }
+    .header-actions { justify-content: flex-start; }
     .subtask-form-row { grid-template-columns: 1fr; }
-    .details-save-bar { align-items: stretch; flex-direction: column; }
-    .comment-actions { justify-content: stretch; }
-    .comment-actions button { flex: 1; }
   }
 </style>

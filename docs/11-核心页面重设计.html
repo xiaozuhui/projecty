@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>核心页面重设计 · Projecty</title>
+<!--
+  与 docs/10-任务详情页重设计.html 同一套设计语言,覆盖四个高频页面:
+  ① 工作台:指标沉入右侧「关注」面板,左右两列表合并为单列表 + 范围切换;到期提醒进面板不再悬浮在右上角
+  ② 全局任务:范围改分段控件,筛选改 chips;按项目分组的整卡改为轻量分组条,行内列数收敛
+  ③ 项目任务列表:十个筛选控件收敛为一行常用 + 「更多筛选」展开;生效筛选以可移除 chips 回显;表头行固定语义
+  ④ 通知中心:未读高亮 + 类型图标着色,与任务页活动流同构
+  顶部可切换页面预览。此文件仅设计稿,落地时映射到 --color-* 变量体系。
+-->
+<style>
+  :root {
+    --bg: #141414;
+    --surface: #1c1c1c;
+    --surface-2: #222222;
+    --sunken: #181818;
+    --border: #2e2e2e;
+    --border-weak: #262626;
+    --text: #e8e8e8;
+    --text-2: #b8b8b8;
+    --muted: #8a8a8a;
+    --faint: #666666;
+    --link: #5aa2ff;
+    --primary: #ffffff;
+    --danger: #f25555;
+    --success: #3fb96f;
+    --warning: #e6a23c;
+    --focus: rgba(90, 162, 255, 0.35);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    padding: 0 0 80px;
+  }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); font-size: 12px; }
+  button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
+
+  /* ── 页面切换器 ── */
+  .switcher {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 4px;
+    padding: 10px clamp(16px, 4vw, 48px);
+    background: rgba(20, 20, 20, 0.92); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border-weak);
+  }
+  .switcher .brand { margin-right: 14px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+  .switch-btn {
+    padding: 6px 14px; border-radius: 999px; font-size: 13px; color: var(--muted);
+    transition: background 0.15s, color 0.15s;
+  }
+  .switch-btn:hover { color: var(--text-2); background: var(--surface-2); }
+  .switch-btn.active { background: var(--surface-2); color: var(--text); font-weight: 500; }
+  .switcher .note { margin-left: auto; font-size: 12px; color: var(--faint); }
+  .screen { display: none; max-width: 1080px; margin: 0 auto; padding: 28px clamp(16px, 4vw, 48px) 0; }
+  .screen.active { display: block; }
+
+  /* ── 通用组件 ── */
+  .page-head { margin-bottom: 22px; }
+  .page-head h1 { font-size: 22px; font-weight: 600; line-height: 1.35; margin: 0; }
+  .meta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .meta-item { display: inline-flex; align-items: center; gap: 6px; }
+  .sep { color: var(--border); }
+  .avatar { width: 20px; height: 20px; border-radius: 50%; background: #3d5a80; color: #fff; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; flex: none; }
+
+  .block { padding: 18px 0; border-top: 1px solid var(--border-weak); }
+  .block:first-of-type { border-top: 0; padding-top: 0; }
+  .block-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+  .block-head h2 { font-size: 13px; font-weight: 600; color: var(--text-2); letter-spacing: 0.02em; }
+  .block-head .count { font-size: 12px; color: var(--faint); font-family: var(--mono); }
+  .block-head .spacer { flex: 1; }
+  .block-head .more { font-size: 12px; color: var(--muted); }
+  .block-head .more:hover { color: var(--link); }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .panel + .panel { margin-top: 14px; }
+  .panel-title { display: flex; align-items: center; gap: 6px; padding: 12px 14px 10px; border-bottom: 1px solid var(--border-weak); font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: 0.04em; }
+  .panel-title .info { margin-left: auto; cursor: help; color: var(--faint); font-weight: 400; font-style: italic; font-family: var(--mono); }
+  .tooltip { position: relative; display: inline-flex; }
+  .tooltip::after {
+    content: attr(data-tip); position: absolute; right: 0; top: calc(100% + 6px); z-index: 5;
+    width: 220px; padding: 8px 10px; border-radius: 8px;
+    background: #0f0f0f; border: 1px solid var(--border);
+    color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: 0;
+    line-height: 1.5; text-align: left; white-space: normal;
+    opacity: 0; visibility: hidden; transition: opacity 0.15s; pointer-events: none;
+  }
+  .tooltip:hover::after { opacity: 1; visibility: visible; }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .pill.st-todo { background: var(--surface-2); color: var(--muted); }
+  .pill.st-progress { background: rgba(90, 162, 255, 0.12); color: #7ab3e8; }
+  .pill.st-progress .dot { background: #5aa2ff; }
+  .pill.st-done { background: rgba(63, 185, 111, 0.12); color: var(--success); }
+  .pill.st-done .dot { background: var(--success); }
+  .pill.prio-high { background: rgba(255, 120, 71, 0.12); color: #ff7847; }
+  .pill.prio-medium { background: var(--surface-2); color: var(--text-2); }
+  .pill.type { background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2); }
+
+  .ghost {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border: 1px dashed var(--border); border-radius: 6px;
+    color: var(--muted); font-size: 12px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .ghost:hover { color: var(--link); border-color: var(--link); text-decoration: none; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 500;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn:hover { border-color: var(--muted); color: var(--text); }
+  .btn-primary { background: var(--primary); color: #1a1a1a; border-color: var(--primary); font-weight: 600; }
+  .btn-primary:hover { background: #e8e8e8; }
+
+  .task-key { color: var(--faint); font-family: var(--mono); font-size: 12px; }
+  a:hover .task-key { color: var(--link); }
+
+  .demo-note {
+    margin-top: 28px; padding: 10px 14px;
+    border: 1px solid var(--border); border-left: 3px solid var(--link);
+    border-radius: 10px; background: var(--surface); color: var(--muted); font-size: 12px;
+  }
+  .demo-note strong { color: var(--text-2); }
+  .demo-note li { margin-left: 18px; }
+</style>
+</head>
+<body>
+
+<div class="switcher">
+  <span class="brand">Projecty · 页面重设计</span>
+  <button class="switch-btn active" data-screen="workspace">工作台</button>
+  <button class="switch-btn" data-screen="tasks">任务</button>
+  <button class="switch-btn" data-screen="plist">项目任务列表</button>
+  <button class="switch-btn" data-screen="board">看板</button>
+  <button class="switch-btn" data-screen="notify">通知</button>
+  <span class="note">点标签切换页面预览</span>
+</div>
+
+<!-- ════════════════ ① 工作台 ════════════════ -->
+<div class="screen active" id="screen-workspace">
+
+  <header class="page-head">
+    <h1>工作台</h1>
+    <div class="meta-row">
+      <span class="meta-item">你好,xzh</span><span class="sep">·</span>
+      <span class="meta-item">9月3日 周四</span><span class="sep">·</span>
+      <span class="meta-item">3 个可见项目</span>
+    </div>
+  </header>
+
+  <div style="display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: start;">
+
+    <main>
+      <section class="block">
+        <div class="block-head">
+          <h2>我的任务</h2><span class="count">12</span>
+          <div style="display: inline-flex; gap: 2px; margin-left: 10px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--sunken);">
+            <button style="padding: 3px 10px; border-radius: 6px; background: var(--surface-2); color: var(--text); font-size: 12px;">我负责的 12</button>
+            <button style="padding: 3px 10px; border-radius: 6px; color: var(--muted); font-size: 12px;">我评审的 3</button>
+            <button style="padding: 3px 10px; border-radius: 6px; color: var(--muted); font-size: 12px;">我创建的 27</button>
+          </div>
+          <span class="spacer"></span>
+          <a class="more" href="#">查看全部 →</a>
+        </div>
+        <div style="display: grid;">
+          <a href="#" style="display: flex; align-items: center; gap: 12px; padding: 9px 8px; margin: 0 -8px; border-radius: 8px; color: var(--text); font-size: 13px;" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background='none'">
+            <span class="task-key">WEEKEND-AI-1</span>
+            <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">迁移 formula-engine</span>
+            <span class="pill st-progress"><span class="dot"></span>进行中</span>
+            <span style="font-size: 12px; color: var(--danger); white-space: nowrap;">09-30 截止</span>
+          </a>
+          <a href="#" style="display: flex; align-items: center; gap: 12px; padding: 9px 8px; margin: 0 -8px; border-radius: 8px; color: var(--text); font-size: 13px;" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background='none'">
+            <span class="task-key">WEEKEND-AI-2</span>
+            <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">抽取 formula-crates</span>
+            <span class="pill st-done"><span class="dot"></span>已完成</span>
+            <span style="font-size: 12px; color: var(--muted); white-space: nowrap;">09-02 截止</span>
+          </a>
+          <a href="#" style="display: flex; align-items: center; gap: 12px; padding: 9px 8px; margin: 0 -8px; border-radius: 8px; color: var(--text); font-size: 13px;" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background='none'">
+            <span class="task-key">OPS-14</span>
+            <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">季度巡检报告整理</span>
+            <span class="pill st-todo"><span class="dot"></span>待办</span>
+            <span style="font-size: 12px; color: var(--muted); white-space: nowrap;">09-10 截止</span>
+          </a>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="block-head">
+          <h2>近期项目</h2>
+          <span class="spacer"></span>
+          <a class="more" href="#">全部项目 →</a>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px;">
+          <a href="#" style="display: grid; gap: 6px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text);">
+            <span style="display: flex; align-items: baseline; gap: 8px;"><code style="color: #7ab3e8;">WEEKEND-AI</code><span class="pill st-progress" style="margin-left: auto;">活跃</span></span>
+            <strong style="font-size: 14px;">周末 AI 工程</strong>
+            <span style="font-size: 12px; color: var(--muted);">14 项任务 · 5 项进行中 · 3 项已完成</span>
+          </a>
+          <a href="#" style="display: grid; gap: 6px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text);">
+            <span style="display: flex; align-items: baseline; gap: 8px;"><code style="color: #7ab3e8;">OPS</code><span class="pill st-progress" style="margin-left: auto;">活跃</span></span>
+            <strong style="font-size: 14px;">运维事务</strong>
+            <span style="font-size: 12px; color: var(--muted);">31 项任务 · 8 项进行中 · 12 项已完成</span>
+          </a>
+          <a href="#" style="display: grid; gap: 6px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text);">
+            <span style="display: flex; align-items: baseline; gap: 8px;"><code style="color: #7ab3e8;">HR-PORTAL</code><span class="pill st-todo" style="margin-left: auto;">已归档</span></span>
+            <strong style="font-size: 14px;">人事门户改版</strong>
+            <span style="font-size: 12px; color: var(--muted);">22 项任务 · 全部完成</span>
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <aside>
+      <div class="panel">
+        <div class="panel-title">关注
+          <span class="info tooltip" data-tip="统计范围:分配给你且未完成的任务。点击数字直达对应过滤视图。">i</span>
+        </div>
+        <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 13px; color: var(--text-2);">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--danger);"></span>
+          已逾期 <strong style="margin-left: auto; font-size: 18px; color: var(--danger); font-family: var(--mono);">2</strong>
+        </a>
+        <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 13px; color: var(--text-2); border-top: 1px solid var(--border-weak);">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--warning);"></span>
+          7 天内到期 <strong style="margin-left: auto; font-size: 18px; color: var(--warning); font-family: var(--mono);">3</strong>
+        </a>
+        <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 13px; color: var(--text-2); border-top: 1px solid var(--border-weak);">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--faint);"></span>
+          待我评审 <strong style="margin-left: auto; font-size: 18px; color: var(--text-2); font-family: var(--mono);">3</strong>
+        </a>
+        <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 13px; color: var(--text-2); border-top: 1px solid var(--border-weak);">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--faint);"></span>
+          我创建的 <strong style="margin-left: auto; font-size: 18px; color: var(--text-2); font-family: var(--mono);">27</strong>
+        </a>
+      </div>
+      <div class="panel">
+        <div class="panel-title">快捷入口</div>
+        <div style="display: grid; gap: 8px; padding: 12px 14px;">
+          <a class="ghost" href="#" style="justify-content: center;">＋ 新建项目</a>
+          <a class="ghost" href="#" style="justify-content: center;">去全局搜索</a>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="demo-note">
+    <strong>工作台改动:</strong>
+    <li>四张指标卡 + 右上角到期横幅 → 右侧「关注」面板,数字可点直达过滤视图;</li>
+    <li>左右两个任务列表合并为一个列表 + 分段切换(我负责的/我评审的/我创建的),省一半纵向空间;</li>
+    <li>项目从纯文本行改为卡片,带任务概览;头部加问候与日期。</li>
+  </div>
+</div>
+
+<!-- ════════════════ ② 全局任务 ════════════════ -->
+<div class="screen" id="screen-tasks">
+
+  <header class="page-head">
+    <h1>任务</h1>
+    <div class="meta-row">
+      <span class="meta-item">范围:<b style="color: var(--text-2); font-weight: 500;">我负责的</b></span><span class="sep">·</span>
+      <span class="meta-item">共 12 项</span><span class="sep">·</span>
+      <span class="meta-item" style="color: var(--danger);">2 项逾期</span>
+    </div>
+  </header>
+
+  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px;">
+    <div style="display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--sunken);">
+      <button style="padding: 5px 12px; border-radius: 6px; background: var(--surface-2); color: var(--text); font-size: 12px;">我负责的</button>
+      <button style="padding: 5px 12px; border-radius: 6px; color: var(--muted); font-size: 12px;">我创建的</button>
+      <button style="padding: 5px 12px; border-radius: 6px; color: var(--muted); font-size: 12px;">我评审的</button>
+      <button style="padding: 5px 12px; border-radius: 6px; color: var(--muted); font-size: 12px;">全部</button>
+    </div>
+    <span style="flex: 1;"></span>
+    <button class="chip" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 12px;">仅看逾期</button>
+    <button class="chip" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 12px;">7 天内到期</button>
+    <input placeholder="搜索任务标题或编号" style="width: 200px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px;" />
+  </div>
+
+  <section class="panel" style="padding: 4px 0;">
+    <!-- 分组条:项目不再各占一张卡,只做轻量分组头 -->
+    <div style="display: flex; align-items: center; gap: 8px; padding: 10px 14px 6px; font-size: 12px; color: var(--faint);">
+      <code>WEEKEND-AI</code><span>周末 AI 工程</span>
+      <span style="margin-left: auto; font-family: var(--mono);">2 项</span>
+    </div>
+    <a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; color: var(--text); font-size: 13px;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='none'">
+      <span class="task-key">WEEKEND-AI-1</span>
+      <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">迁移 formula-engine</span>
+      <span class="pill st-progress"><span class="dot"></span>进行中</span>
+      <span class="pill type">功能</span>
+      <span class="pill prio-high">▲ 高</span>
+      <span class="meta-item"><span class="avatar">x</span></span>
+      <span style="width: 64px; text-align: right; font-size: 12px; color: var(--danger);">09-30</span>
+    </a>
+    <a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; color: var(--text); font-size: 13px; border-top: 1px solid var(--border-weak);" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='none'">
+      <span class="task-key">WEEKEND-AI-2</span>
+      <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">抽取 formula-crates</span>
+      <span class="pill st-done"><span class="dot"></span>已完成</span>
+      <span class="pill type">功能</span>
+      <span class="pill prio-medium">中</span>
+      <span class="meta-item"><span class="avatar">x</span></span>
+      <span style="width: 64px; text-align: right; font-size: 12px; color: var(--muted);">09-02</span>
+    </a>
+
+    <div style="display: flex; align-items: center; gap: 8px; padding: 14px 14px 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--faint);">
+      <code>OPS</code><span>运维事务</span>
+      <span style="margin-left: auto; font-family: var(--mono);">1 项</span>
+    </div>
+    <a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; color: var(--text); font-size: 13px;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='none'">
+      <span class="task-key">OPS-14</span>
+      <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">季度巡检报告整理</span>
+      <span class="pill st-todo"><span class="dot"></span>待办</span>
+      <span class="pill type">文档</span>
+      <span class="pill prio-medium">中</span>
+      <span class="meta-item"><span class="avatar">x</span></span>
+      <span style="width: 64px; text-align: right; font-size: 12px; color: var(--muted);">09-10</span>
+    </a>
+  </section>
+
+  <div style="display: flex; justify-content: center; padding: 14px 0;">
+    <button class="btn">加载更多</button>
+  </div>
+
+  <div class="demo-note">
+    <strong>全局任务改动:</strong>
+    <li>底部下划线 tab → 分段控件,和搜索/筛选 chip 同行排布;</li>
+    <li>每个项目一张整卡 → 单一面板内的轻量分组条,去掉卡片边框重复;</li>
+    <li>行的七列网格收敛为:编号 / 标题 / 状态 / 类型 / 优先级 / 负责人 / 截止,截止固定右对齐形成扫描线;</li>
+    <li>行内删除按钮取消,删除动作收到任务详情页,列表只读更干净。</li>
+  </div>
+</div>
+
+<!-- ════════════════ ③ 项目任务列表 ════════════════ -->
+<div class="screen" id="screen-plist">
+
+  <header class="page-head">
+    <nav class="meta-row" style="margin: 0 0 6px; font-size: 12px;">
+      <a href="#" style="color: var(--muted);">项目</a><span>/</span>
+      <a href="#" style="color: var(--muted);">WEEKEND-AI</a><span>/</span>
+      <span>任务列表</span>
+    </nav>
+    <div style="display: flex; align-items: flex-start; gap: 12px;">
+      <h1 style="flex: 1;">任务</h1>
+      <button class="btn">回收站</button>
+      <button class="btn">导出 CSV</button>
+      <button class="btn btn-primary">＋ 新建任务</button>
+    </div>
+    <div class="meta-row">
+      <span class="meta-item">14 项任务</span><span class="sep">·</span>
+      <span class="meta-item">5 项进行中</span><span class="sep">·</span>
+      <span class="meta-item" style="color: var(--danger);">2 项逾期</span><span class="sep">·</span>
+      <span class="meta-item">筛选结果按当前条件导出</span>
+    </div>
+  </header>
+
+  <!-- 筛选:常用一行 + 更多展开;生效条件以 chips 回显 -->
+  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+    <input placeholder="搜索标题或编号" style="width: 200px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px;" />
+    <select style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 13px;"><option>状态:全部</option><option>进行中</option><option>待办</option><option>已完成</option></select>
+    <select style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 13px;"><option>负责人:全部</option><option>xzh</option><option>未分配</option></select>
+    <select style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 13px;"><option>优先级:全部</option><option>高</option><option>中</option><option>低</option></select>
+    <button id="more-filter-toggle" style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--muted); font-size: 13px;">更多筛选 ⌄</button>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 12px; color: var(--faint);">已选 2 项</span>
+    <button style="font-size: 12px; color: var(--muted);">清空</button>
+  </div>
+  <div id="more-filters" style="display: none; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+    <select style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 13px;"><option>类型:全部</option><option>功能</option><option>缺陷</option></select>
+    <select style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 13px;"><option>里程碑:全部</option><option>M1 基础迁移</option></select>
+    <select style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 13px;"><option>标签:全部</option><option>engine</option></select>
+    <select style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2); font-size: 13px;"><option>层级:全部</option><option>仅根任务</option><option>仅子任务</option></select>
+    <button class="chip" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 12px;">仅看逾期</button>
+  </div>
+  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px;">
+    <span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: rgba(90, 162, 255, 0.12); color: #7ab3e8; font-size: 12px;">状态:进行中 <b style="cursor: pointer; opacity: 0.7;">×</b></span>
+    <span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: rgba(90, 162, 255, 0.12); color: #7ab3e8; font-size: 12px;">负责人:xzh <b style="cursor: pointer; opacity: 0.7;">×</b></span>
+  </div>
+
+  <section class="panel">
+    <div style="display: grid; grid-template-columns: 110px minmax(0, 1fr) 90px 90px 64px 72px; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--faint);">
+      <span>编号</span><span>标题</span><span>状态</span><span>负责人</span><span>优先级</span><span style="text-align: right;">截止</span>
+    </div>
+    <a href="#" style="display: grid; grid-template-columns: 110px minmax(0, 1fr) 90px 90px 64px 72px; gap: 12px; align-items: center; padding: 10px 14px; color: var(--text); font-size: 13px;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='none'">
+      <span class="task-key">WEEKEND-AI-1</span>
+      <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">迁移 formula-engine <span style="font-family: var(--mono); font-size: 11px; color: var(--faint);">1/1</span></span>
+      <span class="pill st-progress"><span class="dot"></span>进行中</span>
+      <span class="meta-item"><span class="avatar">x</span>xzh</span>
+      <span class="pill prio-high">高</span>
+      <span style="text-align: right; font-size: 12px; color: var(--danger);">09-30</span>
+    </a>
+    <!-- 子任务缩进 -->
+    <a href="#" style="display: grid; grid-template-columns: 110px minmax(0, 1fr) 90px 90px 64px 72px; gap: 12px; align-items: center; padding: 10px 14px 10px 30px; border-top: 1px solid var(--border-weak); color: var(--text); font-size: 13px;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='none'">
+      <span class="task-key">↳ -2</span>
+      <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">抽取 formula-crates</span>
+      <span class="pill st-done"><span class="dot"></span>已完成</span>
+      <span class="meta-item"><span class="avatar">x</span>xzh</span>
+      <span class="pill prio-medium">中</span>
+      <span style="text-align: right; font-size: 12px; color: var(--muted);">09-02</span>
+    </a>
+    <a href="#" style="display: grid; grid-template-columns: 110px minmax(0, 1fr) 90px 90px 64px 72px; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border-weak); color: var(--text); font-size: 13px;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='none'">
+      <span class="task-key">WEEKEND-AI-3</span>
+      <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">接入运行时校验</span>
+      <span class="pill st-todo"><span class="dot"></span>待办</span>
+      <span style="font-size: 12px; color: var(--faint);">未分配</span>
+      <span class="pill prio-medium">中</span>
+      <span style="text-align: right; font-size: 12px; color: var(--muted);">—</span>
+    </a>
+  </section>
+
+  <div style="display: flex; justify-content: center; padding: 14px 0;">
+    <button class="btn">加载更多</button>
+  </div>
+
+  <div class="demo-note">
+    <strong>项目任务列表改动:</strong>
+    <li>十个筛选控件平铺 → 常用四个一行,其余收进「更多筛选 ⌄」;</li>
+    <li>生效的筛选条件以可移除 chips 回显,一眼看清当前视图是什么,× 单项取消;</li>
+    <li>新建任务/回收站/导出移到头部动作区,不再和筛选混在一行;</li>
+    <li>行加表头语义,子任务缩进显示,父任务带子任务进度 (1/1)。</li>
+  </div>
+</div>
+
+<!-- ════════════════ ⑤ 看板 ════════════════ -->
+<div class="screen" id="screen-board">
+
+  <header class="page-head">
+    <nav class="meta-row" style="margin: 0 0 6px; font-size: 12px;">
+      <a href="#" style="color: var(--muted);">项目</a><span>/</span>
+      <a href="#" style="color: var(--muted);">WEEKEND-AI</a><span>/</span>
+      <span>看板</span>
+    </nav>
+    <h1>看板</h1>
+    <div class="meta-row">
+      <span class="meta-item">14 项任务</span><span class="sep">·</span>
+      <span class="meta-item">5 项进行中</span><span class="sep">·</span>
+      <span class="meta-item">3 项已完成</span><span class="sep">·</span>
+      <span class="meta-item" style="color: var(--danger);">2 项逾期</span>
+    </div>
+  </header>
+
+  <style>
+    /* 看板页专属样式(前缀 b- 避免与其他屏冲突) */
+    .b-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .b-toolbar select, .b-toolbar input {
+      padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); color: var(--text-2); font-size: 13px;
+    }
+    .b-board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; align-items: flex-start; }
+    .b-col {
+      display: flex; flex-direction: column; flex: none; width: 280px; min-height: 380px;
+      padding: 10px; background: var(--sunken);
+      border: 1px solid var(--border-weak); border-radius: 12px;
+    }
+    .b-col-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 10px; }
+    .b-col-head .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .b-col-head h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-2); }
+    .b-col-head .count { margin-left: auto; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 11px; font-family: var(--mono); }
+    .b-c-todo .dot { background: var(--muted); }
+    .b-c-progress .dot { background: #5aa2ff; }
+    .b-c-review .dot { background: var(--warning); }
+    .b-c-done .dot { background: var(--success); }
+    .b-lane {
+      display: flex; align-items: center; gap: 8px; padding: 5px 8px; margin: 2px 0;
+      border-radius: 6px; background: var(--surface-2);
+      font-size: 12px; font-weight: 500; color: var(--text-2);
+    }
+    .b-lane small { margin-left: auto; color: var(--faint); font-family: var(--mono); font-size: 11px; }
+    .b-board[data-group="none"] .b-lane { display: none; }
+    .b-card {
+      display: grid; gap: 7px; padding: 10px 12px; margin: 4px 0;
+      background: var(--surface); border: 1px solid var(--border); border-left: 3px solid transparent;
+      border-radius: 8px; color: var(--text); text-decoration: none;
+      transition: border-color 0.15s;
+    }
+    .b-card:hover { border-color: var(--muted); border-left-color: var(--muted); }
+    .b-card.overdue { border-left-color: var(--danger); }
+    .b-card-top { display: flex; align-items: center; gap: 8px; }
+    .b-card-top code { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+    .b-card-top .pills { margin-left: auto; display: inline-flex; gap: 4px; }
+    .b-card .parent { color: var(--faint); font-family: var(--mono); font-size: 11px; }
+    .b-card .title { font-size: 13px; font-weight: 500; line-height: 1.45; }
+    .b-card .labels { display: flex; flex-wrap: wrap; gap: 4px; }
+    .b-label { padding: 0 7px; border-radius: 999px; font-size: 11px; line-height: 1.7; border: 1px solid; }
+    .b-card-bottom { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .b-card-bottom .due { margin-right: auto; }
+    .b-card-bottom .due.danger { color: var(--danger); font-weight: 500; }
+    .b-progress { padding: 1px 7px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    .b-quickadd {
+      margin-top: 6px; padding: 6px 8px; border-radius: 6px;
+      color: var(--faint); font-size: 12px; text-align: left;
+      border: 1px dashed transparent;
+    }
+    .b-col:hover .b-quickadd { border-color: var(--border); color: var(--muted); }
+    .b-quickadd:hover { color: var(--link); border-color: var(--link); }
+    .b-empty { padding: 18px 8px; border: 1px dashed var(--border); border-radius: 8px; color: var(--faint); font-size: 12px; text-align: center; }
+  </style>
+
+  <div class="b-toolbar">
+    <div style="display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--sunken);">
+      <button style="padding: 5px 12px; border-radius: 6px; background: var(--surface-2); color: var(--text); font-size: 12px;">看板</button>
+      <button style="padding: 5px 12px; border-radius: 6px; color: var(--muted); font-size: 12px;">列表</button>
+      <button style="padding: 5px 12px; border-radius: 6px; color: var(--muted); font-size: 12px;">时间线</button>
+      <button style="padding: 5px 12px; border-radius: 6px; color: var(--muted); font-size: 12px;">日历</button>
+    </div>
+    <input placeholder="搜索标题或编号" style="width: 180px;" />
+    <select><option>负责人:全部</option><option>xzh</option><option>未分配</option></select>
+    <select><option>标签:全部</option><option>engine</option><option>docs</option></select>
+    <span style="flex: 1;"></span>
+    <label style="display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px;">
+      泳道分组
+      <select id="b-group">
+        <option value="none">不分组</option>
+        <option value="assignee">按负责人</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="b-board" id="b-board" data-group="none">
+
+    <section class="b-col b-c-todo">
+      <div class="b-col-head"><span class="dot"></span><h2>待办</h2><span class="count">4</span></div>
+      <div class="b-lane"><span class="avatar">x</span>xzh<small>3</small></div>
+      <a class="b-card" href="#">
+        <span class="b-card-top"><code>WEEKEND-AI-3</code><span class="pills"><span class="pill prio-medium">中</span></span></span>
+        <span class="title">接入运行时校验</span>
+        <span class="labels"><span class="b-label" style="color: #5aa2ff; border-color: rgba(90,162,255,.35); background: rgba(90,162,255,.12);">engine</span></span>
+        <span class="b-card-bottom"><span class="due">09-12 截止</span><span class="avatar">x</span></span>
+      </a>
+      <a class="b-card overdue" href="#">
+        <span class="b-card-top"><code>OPS-14</code><span class="pills"><span class="pill prio-high">▲ 高</span></span></span>
+        <span class="parent">↳ OPS-9</span>
+        <span class="title">季度巡检报告整理</span>
+        <span class="b-card-bottom"><span class="due danger">08-30 已逾期</span></span>
+      </a>
+      <div class="b-quickadd">＋ 添加任务</div>
+    </section>
+
+    <section class="b-col b-c-progress">
+      <div class="b-col-head"><span class="dot"></span><h2>进行中</h2><span class="count">2</span></div>
+      <div class="b-lane"><span class="avatar">x</span>xzh<small>2</small></div>
+      <a class="b-card" href="#">
+        <span class="b-card-top"><code>WEEKEND-AI-1</code><span class="pills"><span class="pill type">功能</span><span class="pill prio-high">▲ 高</span></span></span>
+        <span class="title">迁移 formula-engine</span>
+        <span class="b-card-bottom">
+          <span class="due">09-30 截止</span>
+          <span class="b-progress">1/1</span>
+          <span class="avatar">x</span>
+        </span>
+      </a>
+      <a class="b-card" href="#">
+        <span class="b-card-top"><code>WEEKEND-AI-6</code><span class="pills"><span class="pill type">功能</span><span class="pill prio-medium">中</span></span></span>
+        <span class="title">公式缓存层设计</span>
+        <span class="labels"><span class="b-label" style="color: #5aa2ff; border-color: rgba(90,162,255,.35); background: rgba(90,162,255,.12);">engine</span><span class="b-label" style="color: #b45309; border-color: rgba(180,83,9,.35); background: rgba(180,83,9,.12);">perf</span></span>
+        <span class="b-card-bottom"><span class="due">未设置截止</span><span class="avatar">x</span></span>
+      </a>
+      <div class="b-quickadd">＋ 添加任务</div>
+    </section>
+
+    <section class="b-col b-c-review">
+      <div class="b-col-head"><span class="dot"></span><h2>评审中</h2><span class="count">1</span></div>
+      <a class="b-card" href="#">
+        <span class="b-card-top"><code>WEEKEND-AI-2</code><span class="pills"><span class="pill type">功能</span><span class="pill prio-medium">中</span></span></span>
+        <span class="parent">↳ WEEKEND-AI-1</span>
+        <span class="title">抽取 formula-crates</span>
+        <span class="b-card-bottom"><span class="due">09-02 截止</span><span class="avatar">x</span></span>
+      </a>
+      <div class="b-empty">拖拽卡片到这里</div>
+      <div class="b-quickadd">＋ 添加任务</div>
+    </section>
+
+    <section class="b-col b-c-done">
+      <div class="b-col-head"><span class="dot"></span><h2>已完成</h2><span class="count">3</span></div>
+      <a class="b-card" href="#" style="opacity: 0.72;">
+        <span class="b-card-top"><code>WEEKEND-AI-5</code><span class="pills"><span class="pill prio-medium">中</span></span></span>
+        <span class="title">确定技术选型</span>
+        <span class="b-card-bottom"><span class="due">08-28 完成</span></span>
+      </a>
+      <div class="b-quickadd">＋ 添加任务</div>
+    </section>
+
+  </div>
+
+  <div class="demo-note">
+    <strong>看板改动:</strong>
+    <li>PageHeader + 右上孤立的分组下拉 → 面包屑头部 + 工具栏:视图切换(看板/列表/时间线/日历)、搜索、负责人/标签筛选、泳道分组;</li>
+    <li>列头不再露英文 category 原文,改状态色圆点 + 计数;四类状态色:待办灰 / 进行中蓝 / 评审黄 / 完成绿;</li>
+    <li>工具栏的「泳道分组」下拉可切换试试:选「按负责人」后列内出现泳道条;</li>
+    <li>卡片沿用现有增强(标签/子任务进度/逾期红边),补充:逾期文案改「已逾期」、完成列卡片降不透明度;</li>
+    <li>筛选(搜索/负责人/标签)走已有 listTasks 查询参数,不动后端。</li>
+  </div>
+</div>
+
+<!-- ════════════════ ④ 通知中心 ════════════════ -->
+<div class="screen" id="screen-notify">
+
+  <header class="page-head">
+    <h1>通知</h1>
+    <div class="meta-row">
+      <span class="meta-item"><b style="color: var(--text-2); font-weight: 500;">3 条未读</b></span><span class="sep">·</span>
+      <span class="meta-item">最近 7 天 18 条</span>
+    </div>
+  </header>
+
+  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+    <div style="display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--sunken);">
+      <button style="padding: 4px 12px; border-radius: 6px; background: var(--surface-2); color: var(--text); font-size: 12px;">全部</button>
+      <button style="padding: 4px 12px; border-radius: 6px; color: var(--muted); font-size: 12px;">未读 3</button>
+    </div>
+    <span style="flex: 1;"></span>
+    <button class="btn">全部标为已读</button>
+  </div>
+
+  <section class="panel" style="padding: 4px 0;">
+    <a href="#" style="display: flex; gap: 12px; padding: 12px 14px; background: rgba(90, 162, 255, 0.06); border-left: 2px solid var(--link);">
+      <span style="flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; background: rgba(90, 162, 255, 0.15); color: #7ab3e8;">@</span>
+      <span style="flex: 1; min-width: 0; font-size: 13px;">
+        <span style="display: flex; align-items: baseline; gap: 8px;">
+          <strong style="font-weight: 500;">xzh</strong>
+          <span style="color: var(--text-2);">在 WEEKEND-AI-1「迁移 formula-engine」中提及你</span>
+          <time style="margin-left: auto; font-size: 12px; color: var(--faint); flex: none;">12 分钟前</time>
+        </span>
+        <span style="display: block; margin-top: 2px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">评论:子任务已经完成,这周可以把 engine 接进来了。</span>
+      </span>
+    </a>
+    <a href="#" style="display: flex; gap: 12px; padding: 12px 14px; background: rgba(90, 162, 255, 0.06); border-left: 2px solid var(--link); border-top: 1px solid var(--border-weak);">
+      <span style="flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; background: rgba(63, 185, 111, 0.15); color: var(--success);">✓</span>
+      <span style="flex: 1; min-width: 0; font-size: 13px;">
+        <span style="display: flex; align-items: baseline; gap: 8px;">
+          <strong style="font-weight: 500;">xzh</strong>
+          <span style="color: var(--text-2);">请你评审 WEEKEND-AI-2「抽取 formula-crates」</span>
+          <time style="margin-left: auto; font-size: 12px; color: var(--faint); flex: none;">2 小时前</time>
+        </span>
+      </span>
+    </a>
+    <a href="#" style="display: flex; gap: 12px; padding: 12px 14px; border-top: 1px solid var(--border-weak);">
+      <span style="flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; background: var(--surface-2); color: var(--muted);">↻</span>
+      <span style="flex: 1; min-width: 0; font-size: 13px;">
+        <span style="display: flex; align-items: baseline; gap: 8px;">
+          <strong style="font-weight: 500;">xzh</strong>
+          <span style="color: var(--text-2);">将 WEEKEND-AI-1 流转为 进行中</span>
+          <time style="margin-left: auto; font-size: 12px; color: var(--faint); flex: none;">昨天 11:06</time>
+        </span>
+      </span>
+    </a>
+    <a href="#" style="display: flex; gap: 12px; padding: 12px 14px; border-top: 1px solid var(--border-weak);">
+      <span style="flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; background: var(--surface-2); color: var(--muted);">👤</span>
+      <span style="flex: 1; min-width: 0; font-size: 13px;">
+        <span style="display: flex; align-items: baseline; gap: 8px;">
+          <strong style="font-weight: 500;">xzh</strong>
+          <span style="color: var(--text-2);">把 OPS-14「季度巡检报告整理」分配给你</span>
+          <time style="margin-left: auto; font-size: 12px; color: var(--faint); flex: none;">3 天前</time>
+        </span>
+      </span>
+    </a>
+  </section>
+
+  <div style="display: flex; justify-content: center; padding: 14px 0;">
+    <button class="btn">加载更多</button>
+  </div>
+
+  <div class="demo-note">
+    <strong>通知中心改动:</strong>
+    <li>未读通知加左侧蓝色指示条 + 浅底色,与已读一眼区分;</li>
+    <li>类型图标着色:@提及蓝、评审绿、流转灰,与任务页活动流同构;</li>
+    <li>新增「全部 / 未读」分段过滤(客户端过滤即可);</li>
+    <li>相对时间(12 分钟前 / 昨天 11:06),标题行 + 摘要行两级层次。</li>
+  </div>
+</div>
+
+<script>
+  // 页面切换 + 「更多筛选」展开 + 看板泳道切换(演示用)
+  document.querySelectorAll('.switch-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.switch-btn').forEach((item) => item.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.screen').forEach((screen) => screen.classList.remove('active'));
+      document.getElementById(`screen-${btn.dataset.screen}`).classList.add('active');
+      window.scrollTo({ top: 0 });
+    });
+  });
+  document.getElementById('more-filter-toggle').addEventListener('click', () => {
+    const row = document.getElementById('more-filters');
+    row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+  });
+  document.getElementById('b-group').addEventListener('change', (event) => {
+    document.getElementById('b-board').dataset.group = event.target.value;
+  });
+</script>
+
+</body>
+</html>

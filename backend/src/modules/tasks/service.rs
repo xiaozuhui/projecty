@@ -98,7 +98,9 @@ pub struct CreateTaskRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateTaskRequest {
     pub title: Option<String>,
-    pub description: Option<String>,
+    // 描述同样用双层 Option:缺省=不修改,显式 null=清空。
+    #[serde(default, deserialize_with = "double_option")]
+    pub description: Option<Option<String>>,
     pub priority: Option<String>,
     pub task_type: Option<String>,
     // 双层 Option:字段缺省=不修改,显式 null=清空,配合 double_option 反序列化。
@@ -208,6 +210,8 @@ pub struct TaskListItem {
     pub project_key: String,
     pub project_name: String,
     pub status_name: String,
+    /// 状态类别(todo/in_progress/done),前端据此给状态胶囊着色。
+    pub status_category: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,7 +320,7 @@ async fn hydrate_project_context(
             .map(|project| (project.id, (project.project_key, project.name)))
             .collect()
     };
-    let statuses: HashMap<Uuid, String> = if status_ids.is_empty() {
+    let statuses: HashMap<Uuid, (String, String)> = if status_ids.is_empty() {
         HashMap::new()
     } else {
         project_statuses::Entity::find()
@@ -324,7 +328,7 @@ async fn hydrate_project_context(
             .all(db)
             .await?
             .into_iter()
-            .map(|status| (status.id, status.name))
+            .map(|status| (status.id, (status.name, status.category)))
             .collect()
     };
     Ok(views
@@ -332,12 +336,14 @@ async fn hydrate_project_context(
         .map(|view| {
             let (project_key, project_name) =
                 projects.get(&view.project_id).cloned().unwrap_or_default();
-            let status_name = statuses.get(&view.status_id).cloned().unwrap_or_default();
+            let (status_name, status_category) =
+                statuses.get(&view.status_id).cloned().unwrap_or_default();
             TaskListItem {
                 task: view,
                 project_key,
                 project_name,
                 status_name,
+                status_category,
             }
         })
         .collect())
@@ -728,7 +734,7 @@ pub async fn update(
         diff.insert("title".to_owned(), json!(active.title.as_ref()));
     }
     if let Some(description) = request.description {
-        active.description = Set(Some(description.clone()));
+        active.description = Set(description.clone());
         diff.insert("description".to_owned(), json!(description));
     }
     if let Some(priority) = request.priority {
