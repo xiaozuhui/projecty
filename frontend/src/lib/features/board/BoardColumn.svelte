@@ -196,19 +196,16 @@
   .quick-add { margin-top: 8px; }
   .quick-add-toggle {
     width: 100%;
-    padding: 6px 8px;
-    border: 1px dashed transparent;
+    padding: 6px 10px;
+    border: 1px dashed var(--color-border-strong);
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--color-text-muted);
     font-size: 12px;
     text-align: left;
     cursor: pointer;
-    opacity: 0;
-    transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
   }
-  .board-column:hover .quick-add-toggle,
-  .quick-add-toggle:focus-visible { opacity: 1; }
   .quick-add-toggle:hover { color: var(--color-primary-strong); border-color: var(--color-primary); }
   .quick-add form { display: block; }
   .quick-add input {

@@ -172,7 +172,8 @@
           overdue: overdueFilter
         }),
         listStatuses(projectKey),
-        listTasks(projectKey, 1, 100, { parentTaskId: 'none' }),
+        // 后端 parent_task_id 只收 UUID,没有「仅根任务」参数,这里全量拉一页后客户端筛。
+        listTasks(projectKey, 1, 100),
         listProjectMembers(projectKey),
         listLabels(projectKey),
         listMilestones(projectKey)
@@ -182,7 +183,7 @@
       currentPage = taskResponse.data.page;
       hasMore = taskResponse.data.has_more;
       statuses = statusResponse.data;
-      rootTasks = rootResponse.data.items;
+      rootTasks = rootResponse.data.items.filter((task) => !task.parent_task_id);
       members = memberResponse.data.items;
       labels = labelResponse.data;
       milestones = milestoneResponse.data.items;
