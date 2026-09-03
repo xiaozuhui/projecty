@@ -1,5 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
+    http::header,
+    response::{IntoResponse, Response},
     Json,
 };
 use uuid::Uuid;
@@ -11,8 +13,9 @@ use crate::{
     },
     modules::tasks::service::{
         self, AddDependencyRequest, AddLabelRequest, CreateTaskRequest,
-        CrossProjectTaskListResponse, CrossProjectTasksQuery, DeleteTaskRequest, LabelLite,
-        ListTasksQuery, MoveTaskRequest, TaskDependenciesResponse, TaskListResponse, TaskView,
+        CrossProjectTaskListResponse, CrossProjectTasksQuery, DeletedTaskListResponse,
+        DeleteTaskRequest, LabelLite, ListTasksQuery, MoveTaskRequest,
+        ProjectDependencyListResponse, TaskDependenciesResponse, TaskListResponse, TaskView,
         TransitionTaskRequest, UpdateTaskRequest,
     },
     state::AppState,
@@ -254,4 +257,59 @@ pub async fn remove_dependency(
             .await
             .map_err(map_error)?;
     Ok(success(response))
+}
+
+pub async fn copy_task(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(task_key): Path<String>,
+) -> Result<Json<ApiEnvelope<TaskView>>, AppError> {
+    let response = service::copy_task(&state.db, &current_user, &task_key)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn list_deleted_tasks(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(project_key): Path<String>,
+) -> Result<Json<ApiEnvelope<DeletedTaskListResponse>>, AppError> {
+    let response = service::list_deleted_tasks(&state.db, &current_user, &project_key)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn list_project_dependencies(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(project_key): Path<String>,
+) -> Result<Json<ApiEnvelope<ProjectDependencyListResponse>>, AppError> {
+    let response = service::list_project_dependencies(&state.db, &current_user, &project_key)
+        .await
+        .map_err(map_error)?;
+    Ok(success(response))
+}
+
+pub async fn export_project_tasks(
+    State(state): State<AppState>,
+    current_user: CurrentUser,
+    Path(project_key): Path<String>,
+    Query(query): Query<ListTasksQuery>,
+) -> Result<Response, AppError> {
+    let csv = service::export_project_tasks_csv(&state.db, &current_user, &project_key, &query)
+        .await
+        .map_err(map_error)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{project_key}-tasks.csv\""),
+            ),
+        ],
+        csv,
+    )
+        .into_response())
 }

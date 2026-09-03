@@ -21,11 +21,12 @@ pub enum NotificationError {
     Database(#[from] sea_orm::DbErr),
 }
 
-/// 通知类型常量：分配、指定评审、评论、状态流转。
+/// 通知类型常量：分配、指定评审、评论、状态流转、@提及。
 pub const KIND_ASSIGNED: &str = "assigned";
 pub const KIND_REVIEW_REQUESTED: &str = "review_requested";
 pub const KIND_COMMENTED: &str = "commented";
 pub const KIND_STATUS_CHANGED: &str = "status_changed";
+pub const KIND_MENTIONED: &str = "mentioned";
 
 #[derive(Debug, Serialize)]
 pub struct NotificationView {

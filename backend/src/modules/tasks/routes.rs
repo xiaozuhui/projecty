@@ -40,4 +40,17 @@ pub fn routes() -> Router<AppState> {
             "/tasks/{task_key}/dependencies/{dependency_id}/delete",
             post(handlers::remove_dependency),
         )
+        .route("/tasks/{task_key}/copy", post(handlers::copy_task))
+        .route(
+            "/projects/{project_key}/tasks/deleted",
+            get(handlers::list_deleted_tasks),
+        )
+        .route(
+            "/projects/{project_key}/task-dependencies",
+            get(handlers::list_project_dependencies),
+        )
+        .route(
+            "/projects/{project_key}/tasks/export",
+            get(handlers::export_project_tasks),
+        )
 }

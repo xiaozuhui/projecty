@@ -64,7 +64,7 @@ pub async fn upload(
         }
     }
     let (name, content_type, bytes) =
-        file.ok_or_else(|| AppError::bad_request("需要上传名为 file 的图片文件"))?;
+        file.ok_or_else(|| AppError::bad_request("需要上传名为 file 的文件"))?;
     let view = service::upload(
         &state.db,
         &current_user,
@@ -93,19 +93,29 @@ pub async fn list(
     Ok(success(views))
 }
 
-/// 图片内容公开读取:<img> 无法携带 Authorization,以不可猜的 object_key 作为访问凭证。
+/// 附件内容公开读取:<img> 无法携带 Authorization,以不可猜的 object_key 作为访问凭证。
+/// 图片 inline 供预览;其他类型强制 attachment 下载,防 HTML/SVG 同源脚本执行。
 pub async fn content(
     State(state): State<AppState>,
     Path(object_key): Path<String>,
 ) -> Result<Response, AppError> {
-    let (bytes, mime_type) =
+    let (bytes, mime_type, file_name) =
         service::read_content(&state.db, &object_key, &state.config.upload_dir)
             .await
             .map_err(map_error)?;
+    let disposition = if mime_type.starts_with("image/") {
+        "inline".to_owned()
+    } else {
+        // RFC 5987:中文文件名走 filename*,同时给 ASCII 兜底 filename。
+        let encoded = percent_encoding(file_name.as_bytes());
+        format!(
+            "attachment; filename=\"attachment\"; filename*=UTF-8''{encoded}"
+        )
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime_type)
-        .header(header::CONTENT_DISPOSITION, "inline")
+        .header(header::CONTENT_DISPOSITION, disposition)
         .header(
             header::CACHE_CONTROL,
             "private, max-age=31536000, immutable",
@@ -113,6 +123,25 @@ pub async fn content(
         .header("X-Content-Type-Options", "nosniff")
         .body(Body::from(bytes))
         .map_err(|_| AppError::internal("附件读取暂时不可用"))
+}
+
+/// 百分号编码(UTF-8 字节),不依赖额外 crate。
+fn percent_encoding(value: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
+    }
+    out
 }
 
 #[derive(serde::Deserialize)]

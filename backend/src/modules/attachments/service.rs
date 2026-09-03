@@ -67,6 +67,28 @@ fn extension_for(mime: &str) -> &'static str {
     }
 }
 
+/// 通用文件的存储扩展名:取原始文件名最后一段扩展,白名单 [A-Za-z0-9]{1,12},不合法落 bin。
+fn safe_extension(file_name: Option<&str>) -> String {
+    let raw = file_name
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, ext)| ext)
+        .unwrap_or("");
+    if !raw.is_empty() && raw.len() <= 12 && raw.chars().all(|c| c.is_ascii_alphanumeric()) {
+        raw.to_ascii_lowercase()
+    } else {
+        "bin".to_owned()
+    }
+}
+
+/// 声明 content_type 规范化:截掉 ; 参数,空白视为未声明,兜底 octet-stream。
+fn normalize_declared_mime(content_type: Option<&str>) -> String {
+    content_type
+        .map(|value| value.split(';').next().unwrap_or("").trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream")
+        .to_owned()
+}
+
 /// 展示用文件名:只保留最终路径段,截断到 200 字符。
 fn sanitize_file_name(name: &str) -> String {
     let base = Path::new(name)
@@ -142,24 +164,31 @@ pub async fn upload(
     }
     if bytes.len() > max_bytes {
         return Err(AttachmentError::InvalidInput(format!(
-            "图片大小不能超过 {} MB",
+            "文件大小不能超过 {} MB",
             max_bytes / 1024 / 1024
         )));
     }
-    // 以嗅探结果为准,声明的 content_type 仅作一致性提示,不作为信任来源。
-    let sniffed = sniff_image_mime(&bytes).ok_or_else(|| {
-        AttachmentError::InvalidInput("仅支持 PNG、JPEG、GIF、WebP 格式的图片".to_owned())
-    })?;
-    if let Some(declared) = file.content_type.as_deref() {
-        let declared = declared.split(';').next().unwrap_or("").trim();
-        if !declared.is_empty() && declared != sniffed {
-            return Err(AttachmentError::InvalidInput(format!(
-                "文件内容与声明类型不符：声明 {declared}，实际 {sniffed}"
-            )));
+    // 图片按嗅探结果定型(防改扩展名伪装);其他文件信任声明的 content_type,
+    // 扩展名从原始文件名提取并白名单化,object_key 字符集不受影响。
+    let (mime, extension) = match sniff_image_mime(&bytes) {
+        Some(sniffed) => {
+            if let Some(declared) = file.content_type.as_deref() {
+                let declared = declared.split(';').next().unwrap_or("").trim();
+                if !declared.is_empty() && declared != sniffed {
+                    return Err(AttachmentError::InvalidInput(format!(
+                        "文件内容与声明类型不符：声明 {declared}，实际 {sniffed}"
+                    )));
+                }
+            }
+            (sniffed.to_owned(), extension_for(sniffed).to_owned())
         }
-    }
-    let object_key = format!("{}.{}", Uuid::new_v4(), extension_for(sniffed));
-    let display_name = sanitize_file_name(file.name.as_deref().unwrap_or("image"));
+        None => (
+            normalize_declared_mime(file.content_type.as_deref()),
+            safe_extension(file.name.as_deref()),
+        ),
+    };
+    let object_key = format!("{}.{}", Uuid::new_v4(), extension);
+    let display_name = sanitize_file_name(file.name.as_deref().unwrap_or("file"));
     let now = Utc::now();
     let attachment = task_attachments::ActiveModel {
         id: Set(Uuid::now_v7()),
@@ -168,7 +197,7 @@ pub async fn upload(
         uploader_id: Set(current_user.user_id),
         file_name: Set(display_name),
         object_key: Set(object_key.clone()),
-        mime_type: Set(sniffed.to_owned()),
+        mime_type: Set(mime.clone()),
         byte_size: Set(bytes.len() as i64),
         created_at: Set(now),
         deleted_at: Set(None),
@@ -234,12 +263,12 @@ pub async fn list(
         .collect())
 }
 
-/// 公开读取入口:仅凭库中存在且未软删的 object_key 命中,返回字节与白名单内的 MIME。
+/// 公开读取入口:仅凭库中存在且未软删的 object_key 命中,返回字节、MIME 与原始文件名。
 pub async fn read_content(
     db: &DatabaseConnection,
     object_key: &str,
     upload_dir: &Path,
-) -> Result<(Vec<u8>, String), AttachmentError> {
+) -> Result<(Vec<u8>, String, String), AttachmentError> {
     if !valid_object_key(object_key) {
         return Err(AttachmentError::NotFound);
     }
@@ -252,7 +281,7 @@ pub async fn read_content(
     let bytes = tokio::fs::read(upload_dir.join(object_key))
         .await
         .map_err(|error| AttachmentError::Io(error.to_string()))?;
-    Ok((bytes, attachment.mime_type))
+    Ok((bytes, attachment.mime_type, attachment.file_name))
 }
 
 pub async fn delete(

@@ -2,11 +2,12 @@
 use chrono::{DateTime, Utc};
 use projecty_entity::{operation_logs, projects, task_comments, tasks, users};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
-    TransactionTrait,
+    ActiveModelTrait, ColumnTrait, DatabaseBackend, DatabaseConnection, EntityTrait,
+    FromQueryResult, QueryFilter, QueryOrder, Set, Statement, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::{
@@ -146,6 +147,35 @@ pub async fn create(
         ),
     )
     .await?;
+    // @提及:名字精确匹配项目直接成员;已收到评论通知的人不重复发提及通知。
+    let mentions = extract_mentions(&body);
+    if !mentions.is_empty() {
+        let member_names = project_member_names(db, task.project_id).await?;
+        let mut already_notified: HashSet<Uuid> =
+            notification_service::task_audience(&task).into_iter().collect();
+        already_notified.insert(current_user.user_id);
+        let mentioned_ids: Vec<Uuid> = mentions
+            .iter()
+            .filter_map(|name| member_names.get(name).copied())
+            .filter(|id| !already_notified.contains(id))
+            .collect();
+        if !mentioned_ids.is_empty() {
+            notification_service::notify(
+                &txn,
+                &mentioned_ids,
+                current_user,
+                &author.display_name,
+                &task,
+                &project.project_key,
+                notification_service::KIND_MENTIONED,
+                format!(
+                    "{} 在 {}「{}」中提及你",
+                    author.display_name, task.task_key, task.title
+                ),
+            )
+            .await?;
+        }
+    }
     operation_logs::ActiveModel {
         id: Set(Uuid::now_v7()),
         actor_user_id: Set(current_user.user_id),
@@ -245,6 +275,53 @@ async fn find_task(db: &DatabaseConnection, key: &str) -> Result<tasks::Model, C
         .one(db)
         .await?
         .ok_or(CommentError::NotFound)
+}
+
+/// @提及分隔符:名字取 @ 后连续的非空白、非常见标点片段,最长 80 字符。
+const MENTION_DELIMITERS: &[char] = &[
+    '@', ' ', '\t', '\n', '\r', ',', '.', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"',
+    '\'', '，', '。', '、', '；', '：', '！', '？', '（', '）', '【', '】', '「', '」', '《', '》', '-',
+];
+
+fn extract_mentions(body: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find('@') {
+        let after = &rest[at + '@'.len_utf8()..];
+        let name: String = after
+            .chars()
+            .take_while(|c| !MENTION_DELIMITERS.contains(c))
+            .take(80)
+            .collect();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+        rest = after;
+    }
+    names
+}
+
+/// 项目直接成员 显示名 → 用户 id 映射,@提及按显示名精确匹配。
+async fn project_member_names(
+    db: &DatabaseConnection,
+    project_id: Uuid,
+) -> Result<HashMap<String, Uuid>, CommentError> {
+    #[derive(Debug, FromQueryResult)]
+    struct MemberName {
+        display_name: String,
+        user_id: Uuid,
+    }
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT u.display_name, u.id AS user_id FROM project_members pm JOIN users u ON u.id = pm.user_id WHERE pm.project_id = $1 AND pm.revoked_at IS NULL AND u.is_active = TRUE AND u.deleted_at IS NULL",
+        [project_id.into()],
+    );
+    Ok(MemberName::find_by_statement(statement)
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|row| (row.display_name, row.user_id))
+        .collect())
 }
 async fn require_read(
     db: &DatabaseConnection,

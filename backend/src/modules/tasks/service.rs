@@ -60,6 +60,8 @@ pub struct ListTasksQuery {
     pub label_id: Option<Uuid>,
     /// true=只看已逾期(截止时间已过且状态未到完成类)。
     pub overdue: Option<bool>,
+    /// true=只看 7 天内到期且未完成的任务。
+    pub due_soon: Option<bool>,
 }
 
 impl ListTasksQuery {
@@ -164,6 +166,9 @@ pub struct TaskView {
     pub due_at: Option<DateTime<Utc>>,
     pub milestone_id: Option<Uuid>,
     pub labels: Vec<LabelLite>,
+    /// 子任务统计(看板卡片进度展示用),根任务才有意义,子任务恒为 0。
+    pub subtask_total: i64,
+    pub subtask_done: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -192,6 +197,8 @@ pub struct CrossProjectTasksQuery {
     pub keyword: Option<String>,
     /// true=只看已逾期(截止时间已过且状态未到完成类)。
     pub overdue: Option<bool>,
+    /// true=只看 7 天内到期且未完成的任务。
+    pub due_soon: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -266,6 +273,9 @@ pub async fn list_cross_project_tasks(
     if query.overdue == Some(true) {
         statement = apply_overdue_cross_project(db, statement).await?;
     }
+    if query.due_soon == Some(true) {
+        statement = apply_due_soon_cross_project(db, statement).await?;
+    }
     let total = statement.clone().count(db).await?;
     let models = statement
         .order_by_desc(tasks::Column::UpdatedAt)
@@ -277,8 +287,7 @@ pub async fn list_cross_project_tasks(
     let has_more = models.len() > page_size as usize;
     let models = models.into_iter().take(page_size as usize).collect::<Vec<_>>();
     let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
-    hydrate_user_names(db, &mut items).await?;
-    hydrate_task_labels(db, &mut items).await?;
+    hydrate_views(db, &mut items).await?;
     let items = hydrate_project_context(db, items).await?;
     Ok(CrossProjectTaskListResponse {
         items,
@@ -365,7 +374,35 @@ pub async fn list_project_tasks(
 ) -> Result<TaskListResponse, TaskError> {
     let project = find_project(db, project_key).await?;
     require_read_role(db, current_user, project.id).await?;
+    let statement = build_task_statement(db, &project, query).await?;
     let (page, page_size) = query.normalized();
+    let total = statement.clone().count(db).await?;
+    let models = statement
+        .order_by_desc(tasks::Column::CreatedAt)
+        .order_by_desc(tasks::Column::Id)
+        .offset((page - 1) * page_size)
+        .limit(page_size + 1)
+        .all(db)
+        .await?;
+    let has_more = models.len() > page_size as usize;
+    let models = models.into_iter().take(page_size as usize).collect::<Vec<_>>();
+    let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
+    hydrate_views(db, &mut items).await?;
+    Ok(TaskListResponse {
+        items,
+        page,
+        page_size,
+        has_more,
+        total,
+    })
+}
+
+/// 项目内任务查询语句组装:列表分页与 CSV 导出共用同一套过滤维度。
+async fn build_task_statement(
+    db: &DatabaseConnection,
+    project: &projects::Model,
+    query: &ListTasksQuery,
+) -> Result<Select<tasks::Entity>, TaskError> {
     let mut statement = tasks::Entity::find()
         .filter(tasks::Column::ProjectId.eq(project.id))
         .filter(tasks::Column::DeletedAt.is_null());
@@ -414,26 +451,10 @@ pub async fn list_project_tasks(
     if query.overdue == Some(true) {
         statement = apply_overdue_filter(db, statement, project.id).await?;
     }
-    let total = statement.clone().count(db).await?;
-    let models = statement
-        .order_by_desc(tasks::Column::CreatedAt)
-        .order_by_desc(tasks::Column::Id)
-        .offset((page - 1) * page_size)
-        .limit(page_size + 1)
-        .all(db)
-        .await?;
-    let has_more = models.len() > page_size as usize;
-    let models = models.into_iter().take(page_size as usize).collect::<Vec<_>>();
-    let mut items: Vec<TaskView> = models.into_iter().map(TaskView::from).collect();
-    hydrate_user_names(db, &mut items).await?;
-    hydrate_task_labels(db, &mut items).await?;
-    Ok(TaskListResponse {
-        items,
-        page,
-        page_size,
-        has_more,
-        total,
-    })
+    if query.due_soon == Some(true) {
+        statement = apply_due_soon_filter(db, statement, project.id).await?;
+    }
+    Ok(statement)
 }
 
 /// 逾期过滤:截止时间已过,且状态未到完成类(项目内 done 状态集先查后排除)。
@@ -481,6 +502,41 @@ async fn done_status_ids(
         .collect())
 }
 
+/// 7 天内到期过滤:due_at ∈ [now, now+7d] 且状态未到完成类(项目内)。
+async fn apply_due_soon_filter(
+    db: &DatabaseConnection,
+    statement: Select<tasks::Entity>,
+    project_id: Uuid,
+) -> Result<Select<tasks::Entity>, TaskError> {
+    let done_ids = done_status_ids(db, Some(project_id)).await?;
+    let now = Utc::now();
+    let until = now + chrono::TimeDelta::try_days(7).unwrap_or_default();
+    let statement = statement
+        .filter(tasks::Column::DueAt.gte(now))
+        .filter(tasks::Column::DueAt.lte(until));
+    if done_ids.is_empty() {
+        return Ok(statement);
+    }
+    Ok(statement.filter(tasks::Column::StatusId.is_not_in(done_ids)))
+}
+
+/// 7 天内到期过滤的跨项目版本:排除所有项目的 done 类状态。
+async fn apply_due_soon_cross_project(
+    db: &DatabaseConnection,
+    statement: Select<tasks::Entity>,
+) -> Result<Select<tasks::Entity>, TaskError> {
+    let done_ids = done_status_ids(db, None).await?;
+    let now = Utc::now();
+    let until = now + chrono::TimeDelta::try_days(7).unwrap_or_default();
+    let statement = statement
+        .filter(tasks::Column::DueAt.gte(now))
+        .filter(tasks::Column::DueAt.lte(until));
+    if done_ids.is_empty() {
+        return Ok(statement);
+    }
+    Ok(statement.filter(tasks::Column::StatusId.is_not_in(done_ids)))
+}
+
 /// LIKE 模式转义:百分号、下划线与反斜杠按字面匹配。
 fn escape_like(value: &str) -> String {
     value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
@@ -494,8 +550,7 @@ pub async fn detail(
     let task = find_task(db, task_key, false).await?;
     require_read_role(db, current_user, task.project_id).await?;
     let mut view = TaskView::from(task);
-    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
-    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_views(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -649,8 +704,7 @@ async fn create_task(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(task);
-    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
-    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_views(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -799,8 +853,7 @@ pub async fn update(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(updated);
-    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
-    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_views(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -847,8 +900,7 @@ pub async fn transition(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(updated);
-    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
-    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_views(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -922,8 +974,7 @@ pub async fn move_task(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(updated);
-    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
-    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_views(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -993,8 +1044,7 @@ pub async fn restore(
     .await?;
     txn.commit().await?;
     let mut view = TaskView::from(restored);
-    hydrate_user_names(db, std::slice::from_mut(&mut view)).await?;
-    hydrate_task_labels(db, std::slice::from_mut(&mut view)).await?;
+    hydrate_views(db, std::slice::from_mut(&mut view)).await?;
     Ok(view)
 }
 
@@ -1014,8 +1064,7 @@ pub async fn subtasks(
         .into_iter()
         .map(TaskView::from)
         .collect();
-    hydrate_user_names(db, &mut items).await?;
-    hydrate_task_labels(db, &mut items).await?;
+    hydrate_views(db, &mut items).await?;
     Ok(items)
 }
 
@@ -1253,6 +1302,57 @@ async fn compact_column<C: ConnectionTrait + Send + Sync>(
         };
         active.position = Set(index as i64);
         active.update(conn).await?;
+    }
+    Ok(())
+}
+
+/// 视图回填统一入口:负责人/评审人姓名、标签、子任务进度,一次批量补齐。
+async fn hydrate_views(
+    db: &DatabaseConnection,
+    views: &mut [TaskView],
+) -> Result<(), TaskError> {
+    hydrate_user_names(db, views).await?;
+    hydrate_task_labels(db, views).await?;
+    hydrate_task_stats(db, views).await?;
+    Ok(())
+}
+
+/// 子任务进度统计:一条聚合 SQL 按 parent 分组,done 类状态计完成。
+async fn hydrate_task_stats(
+    db: &DatabaseConnection,
+    views: &mut [TaskView],
+) -> Result<(), TaskError> {
+    #[derive(Debug, FromQueryResult)]
+    struct SubtaskStat {
+        parent_task_id: Uuid,
+        total: i64,
+        done: i64,
+    }
+    let parent_ids: Vec<Uuid> = views
+        .iter()
+        .filter(|view| view.parent_task_id.is_none())
+        .map(|view| view.id)
+        .collect();
+    if parent_ids.is_empty() {
+        return Ok(());
+    }
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT t.parent_task_id AS parent_task_id, COUNT(*) AS total, COUNT(*) FILTER (WHERE ps.category = 'done') AS done FROM tasks t JOIN project_statuses ps ON ps.id = t.status_id WHERE t.parent_task_id = ANY($1) AND t.deleted_at IS NULL GROUP BY t.parent_task_id",
+        [parent_ids.into()],
+    );
+    let stats: HashMap<Uuid, (i64, i64)> = SubtaskStat::find_by_statement(statement)
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|row| (row.parent_task_id, (row.total, row.done)))
+        .collect();
+    for view in views.iter_mut() {
+        if view.parent_task_id.is_none() {
+            let (total, done) = stats.get(&view.id).cloned().unwrap_or((0, 0));
+            view.subtask_total = total;
+            view.subtask_done = done;
+        }
     }
     Ok(())
 }
@@ -1585,6 +1685,8 @@ impl From<tasks::Model> for TaskView {
             due_at: value.due_at,
             milestone_id: value.milestone_id,
             labels: Vec::new(),
+            subtask_total: 0,
+            subtask_done: 0,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -1962,4 +2064,344 @@ async fn creates_cycle(
         }
     }
     Ok(false)
+}
+
+// ---------- 任务复制 ----------
+
+/// 复制任务:字段 + 标签 + 里程碑关联随行,评论/附件/依赖/子任务不复制;
+/// 副本总是根任务,落到项目默认状态列末尾,操作者成为创建人。
+pub async fn copy_task(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    task_key: &str,
+) -> Result<TaskView, TaskError> {
+    let source = find_task(db, task_key, false).await?;
+    let role = require_write_role(db, current_user, source.project_id).await?;
+    let project = projects::Entity::find_by_id(source.project_id)
+        .filter(projects::Column::DeletedAt.is_null())
+        .one(db)
+        .await?
+        .ok_or(TaskError::NotFound)?;
+    ensure_project_open(&project)?;
+    let txn = db.begin().await?;
+    let status = find_status_for_create(&txn, project.id, None).await?;
+    if status.category == "done" && !role.can_manage_project() {
+        return Err(TaskError::ForbiddenAction(
+            "项目默认状态为已完成时,仅项目管理员可以复制".to_owned(),
+        ));
+    }
+    let task_number = next_task_number(&txn, project.id).await?;
+    let position = next_position_in_column(&txn, project.id, status.id).await?;
+    let now = Utc::now();
+    let copy = tasks::ActiveModel {
+        id: Set(Uuid::now_v7()),
+        task_key: Set(format!("{}-{}", project.project_key, task_number)),
+        project_id: Set(project.id),
+        parent_task_id: Set(None),
+        status_id: Set(status.id),
+        position: Set(position),
+        milestone_id: Set(source.milestone_id),
+        title: Set(source.title.clone()),
+        description: Set(source.description.clone()),
+        priority: Set(source.priority.clone()),
+        task_type: Set(source.task_type.clone()),
+        reporter_id: Set(current_user.user_id),
+        assignee_id: Set(source.assignee_id),
+        reviewer_id: Set(source.reviewer_id),
+        start_at: Set(source.start_at),
+        due_at: Set(source.due_at),
+        created_at: Set(now),
+        updated_at: Set(now),
+        deleted_at: Set(None),
+        deleted_by: Set(None),
+        delete_reason: Set(None),
+        task_number: Set(task_number),
+    }
+    .insert(&txn)
+    .await?;
+    let label_rows = task_labels::Entity::find()
+        .filter(task_labels::Column::TaskId.eq(source.id))
+        .all(&txn)
+        .await?;
+    for row in label_rows {
+        task_labels::ActiveModel {
+            task_id: Set(copy.id),
+            label_id: Set(row.label_id),
+            created_at: Set(now),
+        }
+        .insert(&txn)
+        .await?;
+    }
+    // 副本沿用了原负责人,与其新建任务同等待遇,分配即通知。
+    if let Some(assignee_id) = copy.assignee_id {
+        let actor_name = actor_display_name(db, current_user.user_id).await?;
+        notify_task_event(
+            &txn,
+            &[assignee_id],
+            current_user,
+            &actor_name,
+            &copy,
+            &project.project_key,
+            notification_service::KIND_ASSIGNED,
+        )
+        .await?;
+    }
+    write_task_log(
+        &txn,
+        current_user.user_id,
+        &copy,
+        "copy",
+        format!("复制任务 {} 为 {}", source.task_key, copy.task_key),
+        json!({ "source_task_key": source.task_key }),
+        None,
+    )
+    .await?;
+    txn.commit().await?;
+    let mut view = TaskView::from(copy);
+    hydrate_views(db, std::slice::from_mut(&mut view)).await?;
+    Ok(view)
+}
+
+// ---------- 回收站 ----------
+
+#[derive(Debug, Serialize)]
+pub struct DeletedTaskItem {
+    pub id: Uuid,
+    pub task_key: String,
+    pub title: String,
+    pub status_name: String,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_by_name: Option<String>,
+    pub delete_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeletedTaskListResponse {
+    pub items: Vec<DeletedTaskItem>,
+}
+
+/// 已逻辑删除的任务清单,供回收站展示与恢复(恢复走既有 restore 用例)。
+pub async fn list_deleted_tasks(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    project_key: &str,
+) -> Result<DeletedTaskListResponse, TaskError> {
+    let project = find_project(db, project_key).await?;
+    require_read_role(db, current_user, project.id).await?;
+    let rows = tasks::Entity::find()
+        .filter(tasks::Column::ProjectId.eq(project.id))
+        .filter(tasks::Column::DeletedAt.is_not_null())
+        .order_by_desc(tasks::Column::DeletedAt)
+        .limit(200)
+        .all(db)
+        .await?;
+    let user_ids: HashSet<Uuid> = rows.iter().filter_map(|row| row.deleted_by).collect();
+    let status_ids: HashSet<Uuid> = rows.iter().map(|row| row.status_id).collect();
+    let user_names: HashMap<Uuid, String> = if user_ids.is_empty() {
+        HashMap::new()
+    } else {
+        users::Entity::find()
+            .filter(users::Column::Id.is_in(user_ids))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|user| (user.id, user.display_name))
+            .collect()
+    };
+    let status_names: HashMap<Uuid, String> = if status_ids.is_empty() {
+        HashMap::new()
+    } else {
+        project_statuses::Entity::find()
+            .filter(project_statuses::Column::Id.is_in(status_ids))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|status| (status.id, status.name))
+            .collect()
+    };
+    let items = rows
+        .into_iter()
+        .map(|row| DeletedTaskItem {
+            status_name: status_names.get(&row.status_id).cloned().unwrap_or_default(),
+            deleted_by_name: row.deleted_by.and_then(|id| user_names.get(&id).cloned()),
+            id: row.id,
+            task_key: row.task_key,
+            title: row.title,
+            deleted_at: row.deleted_at,
+            delete_reason: row.delete_reason,
+        })
+        .collect();
+    Ok(DeletedTaskListResponse { items })
+}
+
+// ---------- 项目级依赖边(甘特图用) ----------
+
+#[derive(Debug, Serialize)]
+pub struct ProjectDependencyEdge {
+    pub dependency_id: Uuid,
+    /// 被阻塞任务。
+    pub task_key: String,
+    /// 阻塞方任务。
+    pub depends_on_task_key: String,
+    pub depends_on_title: String,
+    pub is_done: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectDependencyListResponse {
+    pub items: Vec<ProjectDependencyEdge>,
+}
+
+/// 项目内全部依赖边一次拉取,甘特图连线与列表都复用。
+pub async fn list_project_dependencies(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    project_key: &str,
+) -> Result<ProjectDependencyListResponse, TaskError> {
+    let project = find_project(db, project_key).await?;
+    require_read_role(db, current_user, project.id).await?;
+    #[derive(Debug, FromQueryResult)]
+    struct DependencyRow {
+        id: Uuid,
+        task_id: Uuid,
+        depends_on_task_id: Uuid,
+    }
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT td.id, td.task_id, td.depends_on_task_id FROM task_dependencies td JOIN tasks t ON t.id = td.task_id WHERE t.project_id = $1",
+        [project.id.into()],
+    );
+    let rows = DependencyRow::find_by_statement(statement).all(db).await?;
+    let mut task_ids: Vec<Uuid> = rows.iter().map(|row| row.task_id).collect();
+    task_ids.extend(rows.iter().map(|row| row.depends_on_task_id));
+    let related: HashMap<Uuid, tasks::Model> = if task_ids.is_empty() {
+        HashMap::new()
+    } else {
+        tasks::Entity::find()
+            .filter(tasks::Column::Id.is_in(task_ids))
+            .filter(tasks::Column::DeletedAt.is_null())
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|model| (model.id, model))
+            .collect()
+    };
+    let status_ids: HashSet<Uuid> = related.values().map(|model| model.status_id).collect();
+    let done_status: HashSet<Uuid> = if status_ids.is_empty() {
+        HashSet::new()
+    } else {
+        project_statuses::Entity::find()
+            .filter(project_statuses::Column::Id.is_in(status_ids))
+            .filter(project_statuses::Column::Category.eq("done"))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|status| status.id)
+            .collect()
+    };
+    let items = rows
+        .into_iter()
+        .filter_map(|row| {
+            let blocked = related.get(&row.task_id)?;
+            let blocker = related.get(&row.depends_on_task_id)?;
+            Some(ProjectDependencyEdge {
+                dependency_id: row.id,
+                task_key: blocked.task_key.clone(),
+                depends_on_task_key: blocker.task_key.clone(),
+                depends_on_title: blocker.title.clone(),
+                is_done: done_status.contains(&blocker.status_id),
+            })
+        })
+        .collect();
+    Ok(ProjectDependencyListResponse { items })
+}
+
+// ---------- 任务导出 ----------
+
+fn csv_escape(value: String) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value
+    }
+}
+
+/// 按当前筛选全量导出项目任务为 CSV,列含状态/负责人/里程碑/标签等展示名。
+pub async fn export_project_tasks_csv(
+    db: &DatabaseConnection,
+    current_user: &CurrentUser,
+    project_key: &str,
+    query: &ListTasksQuery,
+) -> Result<String, TaskError> {
+    let project = find_project(db, project_key).await?;
+    require_read_role(db, current_user, project.id).await?;
+    let statement = build_task_statement(db, &project, query).await?;
+    let mut views: Vec<TaskView> = statement
+        .order_by_desc(tasks::Column::CreatedAt)
+        .order_by_desc(tasks::Column::Id)
+        .all(db)
+        .await?
+        .into_iter()
+        .map(TaskView::from)
+        .collect();
+    hydrate_views(db, &mut views).await?;
+    // 里程碑名与状态名按 id 映射补齐。
+    let milestone_ids: HashSet<Uuid> = views.iter().filter_map(|view| view.milestone_id).collect();
+    let milestone_names: HashMap<Uuid, String> = if milestone_ids.is_empty() {
+        HashMap::new()
+    } else {
+        milestones::Entity::find()
+            .filter(milestones::Column::Id.is_in(milestone_ids))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|milestone| (milestone.id, milestone.name))
+            .collect()
+    };
+    let status_ids: HashSet<Uuid> = views.iter().map(|view| view.status_id).collect();
+    let status_names: HashMap<Uuid, String> = if status_ids.is_empty() {
+        HashMap::new()
+    } else {
+        project_statuses::Entity::find()
+            .filter(project_statuses::Column::Id.is_in(status_ids))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|status| (status.id, status.name))
+            .collect()
+    };
+    let mut csv = String::from("task_key,title,status,assignee,reviewer,priority,task_type,milestone,labels,start_at,due_at,created_at,updated_at\n");
+    for view in views {
+        let labels = view
+            .labels
+            .iter()
+            .map(|label| label.name.clone())
+            .collect::<Vec<_>>()
+            .join("|");
+        csv.push_str(
+            &[
+                view.task_key,
+                view.title,
+                status_names.get(&view.status_id).cloned().unwrap_or_default(),
+                view.assignee_name.unwrap_or_default(),
+                view.reviewer_name.unwrap_or_default(),
+                view.priority,
+                view.task_type,
+                view.milestone_id
+                    .and_then(|id| milestone_names.get(&id).cloned())
+                    .unwrap_or_default(),
+                labels,
+                view.start_at.map(|value| value.to_rfc3339()).unwrap_or_default(),
+                view.due_at.map(|value| value.to_rfc3339()).unwrap_or_default(),
+                view.created_at.to_rfc3339(),
+                view.updated_at.to_rfc3339(),
+            ]
+            .into_iter()
+            .map(csv_escape)
+            .collect::<Vec<_>>()
+            .join(","),
+        );
+        csv.push('\n');
+    }
+    Ok(csv)
 }
