@@ -18,6 +18,7 @@ pub struct Model {
     pub title: String,
     pub description: Option<String>,
     pub priority: String,
+    pub task_type: String,
     pub reporter_id: Uuid,
     pub assignee_id: Option<Uuid>,
     /// 评审人:其本人(或豁免角色)才能把任务流转到已完成。

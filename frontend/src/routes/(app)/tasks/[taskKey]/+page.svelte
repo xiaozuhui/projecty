@@ -12,6 +12,8 @@
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
   import { meStore } from '$lib/features/auth/me.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
+  import { taskTypeOptions } from '$lib/features/task-types';
+  import TaskTypePill from '$lib/components/TaskTypePill.svelte';
 
   const taskKey = $derived(String(page.params.taskKey ?? ''));
   const projectKey = $derived(taskKey.replace(/-\d+$/, ''));
@@ -29,6 +31,7 @@
   let selectedDueAt = $state('');
   let selectedAssigneeId = $state<string | null>(null);
   let selectedReviewerId = $state<string | null>(null);
+  let selectedTaskType = $state('feature');
   let savingDetails = $state(false);
   let attachParentId = $state('');
   let showSubtaskModal = $state(false);
@@ -36,6 +39,7 @@
   let subtaskDescription = $state('');
   let subtaskAssigneeId = $state<string | null>(null);
   let subtaskReviewerId = $state<string | null>(null);
+  let subtaskType = $state('feature');
   let subtaskStartAt = $state('');
   let subtaskDueAt = $state('');
   let subtaskComment = $state('');
@@ -108,6 +112,7 @@
       selectedDueAt = taskResponse.data.due_at ? isoToLocalInput(taskResponse.data.due_at) : '';
       selectedAssigneeId = taskResponse.data.assignee_id;
       selectedReviewerId = taskResponse.data.reviewer_id;
+      selectedTaskType = taskResponse.data.task_type;
       attachParentId = '';
     } catch (error) {
       errorMessage = error instanceof ApiClientError ? error.message : '任务加载失败';
@@ -135,6 +140,7 @@
     subtaskDescription = '';
     subtaskAssigneeId = null;
     subtaskReviewerId = null;
+    subtaskType = 'feature';
     subtaskStartAt = '';
     subtaskDueAt = '';
     subtaskComment = '';
@@ -183,6 +189,7 @@
       created = (await createSubtask(taskKey, {
         title: subtaskTitle.trim(),
         description: subtaskDescription.trim() || undefined,
+        task_type: subtaskType,
         status_id: statusId || undefined,
         assignee_id: subtaskAssigneeId,
         reviewer_id: subtaskReviewerId,
@@ -259,6 +266,7 @@
       const updated = (await updateTask(task.task_key, {
         assignee_id: selectedAssigneeId,
         reviewer_id: selectedReviewerId,
+        task_type: selectedTaskType,
         start_at: selectedStartAt ? new Date(selectedStartAt).toISOString() : null,
         due_at: selectedDueAt ? new Date(selectedDueAt).toISOString() : null
       })).data;
@@ -375,6 +383,9 @@
           <span class="field-label">评审人</span>
           <MemberPicker value={selectedReviewerId} {members} disabled={submitting || savingDetails} onchange={(value) => (selectedReviewerId = value)} ariaLabel={`设置 ${task.title} 的评审人`} />
         </div>
+        <div><span class="field-label">类型</span><select bind:value={selectedTaskType} disabled={submitting || savingDetails} aria-label="任务类型">
+          {#each taskTypeOptions as option}<option value={option.value}>{option.label}</option>{/each}
+        </select></div>
         <div><span class="field-label">优先级</span><strong class="priority">{priorityName[task.priority]}</strong></div>
         <div>
           <span class="field-label">开始时间</span>
@@ -444,6 +455,7 @@
             <span class="task-key">{subtask.task_key}</span>
             <strong>{subtask.title}</strong>
             <span class="status-pill">{statusName(subtask.status_id)}</span>
+            <TaskTypePill taskType={subtask.task_type} />
           </a>
         {:else}
           <div class="empty-inline">还没有子任务。</div>
@@ -551,6 +563,12 @@
       <textarea bind:value={subtaskDescription} rows="4" placeholder="补充子任务背景、范围或验收标准" aria-label="子任务描述"></textarea>
     </label>
     <div class="subtask-form-row">
+      <label>
+        <span>类型</span>
+        <select bind:value={subtaskType} aria-label="子任务类型">
+          {#each taskTypeOptions as option}<option value={option.value}>{option.label}</option>{/each}
+        </select>
+      </label>
       <label>
         <span>负责人</span>
         <MemberPicker value={subtaskAssigneeId} {members} onchange={(value) => (subtaskAssigneeId = value)} ariaLabel="子任务负责人" />

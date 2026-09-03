@@ -9,6 +9,8 @@
   import { meStore } from '$lib/features/auth/me.svelte';
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { bindReload } from '$lib/features/ui/page-refresh.svelte';
+  import TaskTypePill from '$lib/components/TaskTypePill.svelte';
+  import { taskTypeOptions } from '$lib/features/task-types';
 
   const projectKey = $derived(String(page.params.projectKey ?? ''));
 
@@ -24,6 +26,7 @@
   let title = $state('');
   let description = $state('');
   let priority = $state('medium');
+  let taskType = $state('feature');
   let assigneeId = $state<string | null>(null);
   let reviewerId = $state<string | null>(null);
   let startAt = $state('');
@@ -31,6 +34,7 @@
   let createStatusId = $state('');
   let statusFilter = $state('');
   let parentFilter = $state('');
+  let taskTypeFilter = $state('');
   let errorMessage = $state('');
   let deletingId = $state<string | null>(null);
 
@@ -63,7 +67,8 @@
       const [taskResponse, statusResponse, rootResponse, memberResponse] = await Promise.all([
         listTasks(projectKey, targetPage, 20, {
           statusId: statusFilter || undefined,
-          parentTaskId: parentFilter || undefined
+          parentTaskId: parentFilter || undefined,
+          taskType: taskTypeFilter || undefined
         }),
         listStatuses(projectKey),
         listTasks(projectKey, 1, 100),
@@ -90,6 +95,7 @@
   function clearFilters() {
     statusFilter = '';
     parentFilter = '';
+    taskTypeFilter = '';
     void load(1);
   }
 
@@ -106,6 +112,7 @@
         title: title.trim(),
         description: description.trim() || undefined,
         priority,
+        task_type: taskType,
         status_id: createStatusId || undefined,
         assignee_id: assigneeId,
         reviewer_id: reviewerId,
@@ -114,6 +121,7 @@
       });
       title = '';
       description = '';
+      taskType = 'feature';
       assigneeId = null;
       reviewerId = null;
       startAt = '';
@@ -189,8 +197,15 @@
         {/each}
       </select>
     </label>
+    <label>
+      类型
+      <select bind:value={taskTypeFilter} aria-label="按类型筛选">
+        <option value="">全部类型</option>
+        {#each taskTypeOptions as option}<option value={option.value}>{option.label}</option>{/each}
+      </select>
+    </label>
     <button class="secondary-button" type="submit" disabled={loading}>筛选</button>
-    <button class="link-button" type="button" onclick={clearFilters} disabled={loading || (!statusFilter && !parentFilter)}>
+    <button class="link-button" type="button" onclick={clearFilters} disabled={loading || (!statusFilter && !parentFilter && !taskTypeFilter)}>
       清除筛选
     </button>
   </form>
@@ -198,6 +213,9 @@
   {#if showCreate}
     <form class="create-task" onsubmit={submit}>
       <input class="field-title" bind:value={title} placeholder="输入任务标题，例如：完成权限模型评审" aria-label="任务标题" />
+      <select bind:value={taskType} aria-label="任务类型">
+        {#each taskTypeOptions as option}<option value={option.value}>{option.label}</option>{/each}
+      </select>
       <select bind:value={priority} aria-label="优先级">
         <option value="urgent">紧急</option>
         <option value="high">高</option>
@@ -240,6 +258,7 @@
             <th>编号</th>
             <th>标题</th>
             <th>状态</th>
+            <th>类型</th>
             <th>优先级</th>
             <th>负责人</th>
             <th>更新时间</th>
@@ -257,6 +276,7 @@
               </td>
               <td><a class="task-title" href={`/tasks/${task.task_key}`}>{task.title}</a></td>
               <td><span class="status-pill">{statusName(task.status_id)}</span></td>
+              <td><TaskTypePill taskType={task.task_type} /></td>
               <td><span class={`priority priority-${task.priority}`}>{priorityName[task.priority]}</span></td>
               <td class="muted">{task.assignee_name ?? '未分配'}</td>
               <td class="muted">

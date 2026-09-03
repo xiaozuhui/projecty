@@ -45,6 +45,7 @@ pub struct ListTasksQuery {
     pub page_size: Option<u64>,
     pub status_id: Option<Uuid>,
     pub parent_task_id: Option<Uuid>,
+    pub task_type: Option<String>,
 }
 
 impl ListTasksQuery {
@@ -60,6 +61,7 @@ pub struct CreateTaskRequest {
     pub title: String,
     pub description: Option<String>,
     pub priority: Option<String>,
+    pub task_type: Option<String>,
     pub status_id: Option<Uuid>,
     pub assignee_id: Option<Uuid>,
     pub reviewer_id: Option<Uuid>,
@@ -73,6 +75,7 @@ pub struct UpdateTaskRequest {
     pub title: Option<String>,
     pub description: Option<String>,
     pub priority: Option<String>,
+    pub task_type: Option<String>,
     // 双层 Option:字段缺省=不修改,显式 null=清空,配合 double_option 反序列化。
     #[serde(default, deserialize_with = "double_option")]
     pub assignee_id: Option<Option<Uuid>>,
@@ -123,6 +126,7 @@ pub struct TaskView {
     pub title: String,
     pub description: Option<String>,
     pub priority: String,
+    pub task_type: String,
     pub status_id: Uuid,
     pub position: i64,
     pub assignee_id: Option<Uuid>,
@@ -313,6 +317,10 @@ pub async fn list_project_tasks(
     if let Some(parent_task_id) = query.parent_task_id {
         statement = statement.filter(tasks::Column::ParentTaskId.eq(parent_task_id));
     }
+    if let Some(task_type) = query.task_type.as_deref() {
+        let task_type = normalize_task_type(Some(task_type.to_owned()))?;
+        statement = statement.filter(tasks::Column::TaskType.eq(task_type));
+    }
     let mut models = statement.all(db).await?;
     let has_more = models.len() > page_size as usize;
     models.truncate(page_size as usize);
@@ -378,6 +386,7 @@ async fn create_task(
 ) -> Result<TaskView, TaskError> {
     let title = required_title(request.title)?;
     let priority = normalize_priority(request.priority)?;
+    let task_type = normalize_task_type(request.task_type)?;
     validate_task_schedule(request.start_at, request.due_at)?;
     if let Some(assignee_id) = request.assignee_id {
         validate_task_user(db, project.id, assignee_id, "负责人").await?;
@@ -431,6 +440,7 @@ async fn create_task(
         title: Set(title),
         description: Set(request.description),
         priority: Set(priority),
+        task_type: Set(task_type),
         reporter_id: Set(current_user.user_id),
         assignee_id: Set(request.assignee_id),
         reviewer_id: Set(request.reviewer_id),
@@ -488,6 +498,11 @@ pub async fn update(
         let priority = normalize_priority(Some(priority))?;
         active.priority = Set(priority.clone());
         diff.insert("priority".to_owned(), json!(priority));
+    }
+    if let Some(task_type) = request.task_type {
+        let task_type = normalize_task_type(Some(task_type))?;
+        active.task_type = Set(task_type.clone());
+        diff.insert("task_type".to_owned(), json!(task_type));
     }
     if let Some(assignee_id) = request.assignee_id {
         if let Some(assignee_id) = assignee_id {
@@ -1151,6 +1166,16 @@ fn validate_task_schedule(
     Ok(())
 }
 
+fn normalize_task_type(task_type: Option<String>) -> Result<String, TaskError> {
+    let task_type = task_type.unwrap_or_else(|| "feature".to_owned());
+    match task_type.as_str() {
+        "feature" | "bug" | "design" | "revert" | "improvement" | "refactor" | "docs" | "chore" => Ok(task_type),
+        _ => Err(TaskError::InvalidInput(
+            "task_type 必须是 feature/bug/design/revert/improvement/refactor/docs/chore".to_owned(),
+        )),
+    }
+}
+
 fn normalize_priority(priority: Option<String>) -> Result<String, TaskError> {
     let priority = priority.unwrap_or_else(|| "medium".to_owned());
     match priority.as_str() {
@@ -1172,6 +1197,7 @@ impl From<tasks::Model> for TaskView {
             title: value.title,
             description: value.description,
             priority: value.priority,
+            task_type: value.task_type,
             status_id: value.status_id,
             position: value.position,
             assignee_id: value.assignee_id,

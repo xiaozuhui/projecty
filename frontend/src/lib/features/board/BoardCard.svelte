@@ -1,6 +1,7 @@
 <script lang="ts">
   import Avatar from '$lib/components/Avatar.svelte';
   import PriorityPill from '$lib/components/PriorityPill.svelte';
+  import TaskTypePill from '$lib/components/TaskTypePill.svelte';
   import type { TaskView } from '$lib/api/types';
 
   interface Props {
@@ -51,7 +52,7 @@
 >
   <span class="card-top">
     <code>{task.task_key}</code>
-    <PriorityPill priority={task.priority} />
+    <span class="card-pills"><TaskTypePill taskType={task.task_type} /><PriorityPill priority={task.priority} /></span>
   </span>
   {#if parentKey}<span class="parent-chip" title="所属父任务">↳ {parentKey}</span>{/if}
   <strong>{task.title}</strong>
@@ -81,6 +82,7 @@
   .board-card.readonly-card, .board-card.readonly-card:active { cursor: pointer; }
   .board-card.dragging { opacity: 0.4; }
   .card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .card-pills { display: inline-flex; align-items: center; gap: 4px; }
   .card-top code { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-muted); }
   .parent-chip { margin-top: -2px; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 11px; }
   .board-card strong { font-size: 14px; font-weight: 500; line-height: 1.45; }

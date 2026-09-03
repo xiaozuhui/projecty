@@ -2,6 +2,7 @@
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Avatar from '$lib/components/Avatar.svelte';
   import PriorityPill from '$lib/components/PriorityPill.svelte';
+  import TaskTypePill from '$lib/components/TaskTypePill.svelte';
   import { ApiClientError } from '$lib/api/client';
   import { deleteTask, listMyTasks } from '$lib/api/tasks';
   import type { TaskListItem } from '$lib/api/types';
@@ -141,6 +142,7 @@
               <span class="task-key">{task.task_key}</span>
               <span class="task-title">{task.title}</span>
               <span class="status-pill">{task.status_name}</span>
+              <TaskTypePill taskType={task.task_type} />
               <PriorityPill priority={task.priority} />
               <span class="assignee">
                 {#if task.assignee_name}<Avatar name={task.assignee_name} size={18} />{task.assignee_name}{:else}未分配{/if}
