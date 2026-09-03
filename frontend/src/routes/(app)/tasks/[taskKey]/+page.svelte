@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import PageHeader from '$lib/components/PageHeader.svelte';
+  import Modal from '$lib/components/Modal.svelte';
   import { ApiClientError } from '$lib/api/client';
   import { confirmDialog } from '$lib/features/ui/dialog.svelte';
   import { listStatuses, listProjectMembers } from '$lib/api/projects';
@@ -26,7 +27,15 @@
   let selectedStatus = $state('');
   let selectedDueAt = $state('');
   let attachParentId = $state('');
+  let showSubtaskModal = $state(false);
   let subtaskTitle = $state('');
+  let subtaskDescription = $state('');
+  let subtaskAssigneeId = $state<string | null>(null);
+  let subtaskReviewerId = $state<string | null>(null);
+  let subtaskDueAt = $state('');
+  let subtaskComment = $state('');
+  let subtaskImages = $state<{ file: File; url: string }[]>([]);
+  let subtaskError = $state('');
   let loading = $state(true);
   let submitting = $state(false);
   let uploading = $state(false);
@@ -35,6 +44,7 @@
   let errorMessage = $state('');
   let taskFileInput = $state<HTMLInputElement | null>(null);
   let commentFileInput = $state<HTMLInputElement | null>(null);
+  let subtaskImageInput = $state<HTMLInputElement | null>(null);
   const statusName = (id: string) => statuses.find((status) => status.id === id)?.name || id.slice(0, 8);
   const priorityName: Record<string, string> = { urgent: '紧急', high: '高', medium: '中', low: '低', none: '无' };
   // datetime-local 的值是本地时区无时区后缀,与 ISO 互转都经 Date 对象走本机时区。
@@ -111,19 +121,81 @@
     }
   }
 
+  function resetSubtaskForm() {
+    for (const image of subtaskImages) URL.revokeObjectURL(image.url);
+    subtaskTitle = '';
+    subtaskDescription = '';
+    subtaskAssigneeId = null;
+    subtaskReviewerId = null;
+    subtaskDueAt = '';
+    subtaskComment = '';
+    subtaskImages = [];
+    subtaskError = '';
+    if (subtaskImageInput) subtaskImageInput.value = '';
+  }
+
+  function openSubtaskModal() {
+    resetSubtaskForm();
+    showSubtaskModal = true;
+  }
+
+  function closeSubtaskModal() {
+    if (submitting) return;
+    showSubtaskModal = false;
+    resetSubtaskForm();
+  }
+
+  function addSubtaskImages(event: Event) {
+    const files = Array.from((event.currentTarget as HTMLInputElement).files ?? []);
+    const images = files.filter((file) => file.type.startsWith('image/'));
+    subtaskImages = [...subtaskImages, ...images.map((file) => ({ file, url: URL.createObjectURL(file) }))];
+    if (subtaskImageInput) subtaskImageInput.value = '';
+  }
+
+  function removeSubtaskImage(image: { file: File; url: string }) {
+    URL.revokeObjectURL(image.url);
+    subtaskImages = subtaskImages.filter((item) => item !== image);
+  }
+
   async function addSubtask(event: SubmitEvent) {
     event.preventDefault();
-    if (!subtaskTitle.trim()) return;
+    if (!subtaskTitle.trim()) {
+      subtaskError = '子任务名称不能为空';
+      return;
+    }
     submitting = true;
+    subtaskError = '';
+    errorMessage = '';
+    let created: TaskView | null = null;
     try {
       // 继承当前状态,但完成列只有可定稿的人才能作为子任务初始状态,其余回落后端默认状态。
       const inherit = statuses.find((status) => status.id === selectedStatus);
       const statusId = inherit && (inherit.category !== 'done' || statusControl.canSetDone) ? selectedStatus : undefined;
-      await createSubtask(taskKey, { title: subtaskTitle.trim(), status_id: statusId || undefined });
-      subtaskTitle = '';
+      created = (await createSubtask(taskKey, {
+        title: subtaskTitle.trim(),
+        description: subtaskDescription.trim() || undefined,
+        status_id: statusId || undefined,
+        assignee_id: subtaskAssigneeId,
+        reviewer_id: subtaskReviewerId,
+        due_at: subtaskDueAt ? new Date(subtaskDueAt).toISOString() : undefined
+      })).data;
+
+      const createdTaskKey = created.task_key;
+      const uploaded = await Promise.all(
+        subtaskImages.map(({ file }) => uploadTaskAttachment(createdTaskKey, file).then((response) => response.data))
+      );
+      if (subtaskComment.trim()) {
+        await createComment(created.task_key, subtaskComment.trim(), uploaded.map((attachment) => attachment.id));
+      }
+
       subtasks = (await getSubtasks(taskKey)).data;
+      showSubtaskModal = false;
+      resetSubtaskForm();
     } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '子任务创建失败';
+      const message = error instanceof ApiClientError ? error.message : '子任务创建失败';
+      subtaskError = created
+        ? `子任务 ${created.task_key} 已创建，但评论或图片保存失败：${message}。请在子任务详情页补充。`
+        : message;
     } finally {
       submitting = false;
     }
@@ -369,10 +441,9 @@
           <div class="empty-inline">还没有子任务。</div>
         {/each}
       </div>
-      <form class="subtask-form" onsubmit={addSubtask}>
-        <input bind:value={subtaskTitle} placeholder="添加一个子任务" aria-label="子任务标题" />
-        <button class="primary-button" type="submit" disabled={submitting}>{submitting ? '添加中…' : '添加子任务'}</button>
-      </form>
+      <button class="secondary-button add-subtask-button" type="button" disabled={submitting} onclick={openSubtaskModal}>
+        添加子任务
+      </button>
       <div class="comments">
         <div class="subtask-heading">
           <div><h2>评论</h2><p>评论新增和逻辑删除都会写入操作日志。</p></div>
@@ -460,6 +531,61 @@
   </div>
 {/if}
 
+
+<Modal open={showSubtaskModal} title="添加子任务" onClose={closeSubtaskModal}>
+  <form id="create-subtask-form" class="subtask-modal-form" onsubmit={addSubtask}>
+    <label>
+      <span>名称 <em>*</em></span>
+      <input bind:value={subtaskTitle} maxlength="200" placeholder="输入子任务名称" aria-label="子任务名称" />
+    </label>
+    <label>
+      <span>描述</span>
+      <textarea bind:value={subtaskDescription} rows="4" placeholder="补充子任务背景、范围或验收标准" aria-label="子任务描述"></textarea>
+    </label>
+    <div class="subtask-form-row">
+      <label>
+        <span>负责人</span>
+        <MemberPicker value={subtaskAssigneeId} {members} onchange={(value) => (subtaskAssigneeId = value)} ariaLabel="子任务负责人" />
+      </label>
+      <label>
+        <span>审批人</span>
+        <MemberPicker value={subtaskReviewerId} {members} onchange={(value) => (subtaskReviewerId = value)} ariaLabel="子任务审批人" />
+      </label>
+    </div>
+    <label>
+      <span>到期时间</span>
+      <input type="datetime-local" bind:value={subtaskDueAt} aria-label="子任务到期时间" />
+    </label>
+    <label>
+      <span>评论</span>
+      <textarea bind:value={subtaskComment} rows="3" placeholder="添加创建说明或评论（可选）" aria-label="子任务评论"></textarea>
+    </label>
+    <div class="subtask-images-field">
+      <span>图片</span>
+      {#if subtaskImages.length}
+        <div class="subtask-image-previews">
+          {#each subtaskImages as image (image.url)}
+            <span class="subtask-image-preview">
+              <img src={image.url} alt={image.file.name} />
+              <button type="button" aria-label={`移除 ${image.file.name}`} onclick={() => removeSubtaskImage(image)}>×</button>
+            </span>
+          {/each}
+        </div>
+      {/if}
+      <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden bind:this={subtaskImageInput} onchange={addSubtaskImages} />
+      <button class="secondary-button" type="button" onclick={() => subtaskImageInput?.click()} disabled={submitting}>添加图片</button>
+      <small>支持 PNG、JPG、GIF、WebP。填写评论时，图片会附在该评论中。</small>
+    </div>
+    {#if subtaskError}<p class="error-message" role="alert">{subtaskError}</p>{/if}
+  </form>
+  {#snippet footer()}
+    <button class="secondary-button" type="button" onclick={closeSubtaskModal} disabled={submitting}>取消</button>
+    <button class="primary-button" type="submit" form="create-subtask-form" disabled={submitting}>
+      {submitting ? '创建中…' : '创建子任务'}
+    </button>
+  {/snippet}
+</Modal>
+
 <style>
   h2, p { margin: 0; }
   .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 18px; }
@@ -482,9 +608,19 @@
   .subtask-list > a:hover strong { color: var(--color-primary); }
   .task-key { color: var(--color-primary-strong); font-family: var(--font-mono); font-size: 12px; }
   .empty-inline { padding: 12px 0; color: var(--color-text-muted); font-size: 13px; }
-  .subtask-form { display: flex; gap: 8px; }
-  .subtask-form input { flex: 1; min-width: 0; }
-  .subtask-form button { border: 0; white-space: nowrap; }
+  .add-subtask-button { justify-self: start; border: 0; }
+  .subtask-modal-form { display: grid; gap: 14px; }
+  .subtask-modal-form label, .subtask-images-field { display: grid; gap: 6px; }
+  .subtask-modal-form label > span, .subtask-images-field > span { color: var(--color-text-secondary); font-size: 13px; font-weight: 500; }
+  .subtask-modal-form em { color: var(--color-danger); font-style: normal; }
+  .subtask-modal-form input, .subtask-modal-form textarea { width: 100%; min-width: 0; }
+  .subtask-modal-form textarea { resize: vertical; }
+  .subtask-form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .subtask-image-previews { display: flex; flex-wrap: wrap; gap: 8px; }
+  .subtask-image-preview { position: relative; display: block; width: 88px; height: 66px; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+  .subtask-image-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .subtask-image-preview button { position: absolute; top: 2px; right: 2px; display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.65); color: #fff; cursor: pointer; }
+  .subtask-images-field small { color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
   .attachment-block { display: grid; gap: 12px; }
   .attachment-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
   .attachment-grid figure { display: grid; gap: 6px; min-width: 0; margin: 0; }
@@ -525,8 +661,7 @@
   }
   @media (max-width: 560px) {
     .subtask-list > a { grid-template-columns: 1fr; gap: 5px; }
-    .subtask-form { display: grid; }
-    .subtask-form button { width: 100%; }
+    .subtask-form-row { grid-template-columns: 1fr; }
     .comment-actions { justify-content: stretch; }
     .comment-actions button { flex: 1; }
   }
