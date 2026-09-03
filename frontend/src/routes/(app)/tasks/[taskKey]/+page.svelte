@@ -63,7 +63,7 @@
   let subtaskStartAt = $state('');
   let subtaskDueAt = $state('');
   let subtaskComment = $state('');
-  let subtaskImages = $state<{ file: File; url: string }[]>([]);
+  let subtaskFiles = $state<{ file: File; previewUrl: string | null }[]>([]);
   let subtaskError = $state('');
   let quickSubtaskTitle = $state('');
   let loading = $state(true);
@@ -74,7 +74,7 @@
   let errorMessage = $state('');
   let taskFileInput = $state<HTMLInputElement | null>(null);
   let commentFileInput = $state<HTMLInputElement | null>(null);
-  let subtaskImageInput = $state<HTMLInputElement | null>(null);
+  let subtaskFileInput = $state<HTMLInputElement | null>(null);
   // 行内编辑挂载后自动聚焦:标题全选,描述落在文末。
   let titleInputEl = $state<HTMLInputElement | null>(null);
   let descInputEl = $state<HTMLTextAreaElement | null>(null);
@@ -91,6 +91,20 @@
     }
   });
   const statusName = (id: string) => statuses.find((status) => status.id === id)?.name || id.slice(0, 8);
+  const isImageAttachment = (attachment: Attachment) => attachment.mime_type.startsWith('image/');
+  const isImageFile = (file: File) => file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+  const fileIcon = (name: string) => {
+    const extension = name.split('.').pop()?.toLowerCase();
+    if (extension === 'log' || extension === 'txt') return '≡';
+    if (['zip', 'gz', 'tar', 'rar', '7z'].includes(extension ?? '')) return '⌘';
+    if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv'].includes(extension ?? '')) return '▤';
+    return '↳';
+  };
   const priorityOptions: { value: Priority; label: string }[] = [
     { value: 'urgent', label: '紧急' },
     { value: 'high', label: '高' },
@@ -271,7 +285,7 @@
   }
 
   function resetSubtaskForm() {
-    for (const image of subtaskImages) URL.revokeObjectURL(image.url);
+    for (const item of subtaskFiles) if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
     subtaskTitle = '';
     subtaskDescription = '';
     subtaskAssigneeId = null;
@@ -280,9 +294,9 @@
     subtaskStartAt = '';
     subtaskDueAt = '';
     subtaskComment = '';
-    subtaskImages = [];
+    subtaskFiles = [];
     subtaskError = '';
-    if (subtaskImageInput) subtaskImageInput.value = '';
+    if (subtaskFileInput) subtaskFileInput.value = '';
   }
 
   function openSubtaskModal() {
@@ -296,16 +310,20 @@
     resetSubtaskForm();
   }
 
-  function addSubtaskImages(event: Event) {
-    const files = Array.from((event.currentTarget as HTMLInputElement).files ?? []);
-    const images = files.filter((file) => file.type.startsWith('image/'));
-    subtaskImages = [...subtaskImages, ...images.map((file) => ({ file, url: URL.createObjectURL(file) }))];
-    if (subtaskImageInput) subtaskImageInput.value = '';
+  function addSubtaskFiles(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = '';
+    if (!files.length) return;
+    subtaskFiles = [
+      ...subtaskFiles,
+      ...files.map((file) => ({ file, previewUrl: isImageFile(file) ? URL.createObjectURL(file) : null }))
+    ];
   }
 
-  function removeSubtaskImage(image: { file: File; url: string }) {
-    URL.revokeObjectURL(image.url);
-    subtaskImages = subtaskImages.filter((item) => item !== image);
+  function removeSubtaskFile(item: { file: File; previewUrl: string | null }) {
+    if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    subtaskFiles = subtaskFiles.filter((candidate) => candidate !== item);
   }
 
   // 快捷新建:只填标题就走默认状态/默认列,后续再到子任务详情里补齐。
@@ -353,7 +371,7 @@
 
       const createdTaskKey = created.task_key;
       const uploaded = await Promise.all(
-        subtaskImages.map(({ file }) => uploadTaskAttachment(createdTaskKey, file).then((response) => response.data))
+        subtaskFiles.map(({ file }) => uploadTaskAttachment(createdTaskKey, file).then((response) => response.data))
       );
       if (subtaskComment.trim()) {
         await createComment(created.task_key, subtaskComment.trim(), uploaded.map((attachment) => attachment.id));
@@ -365,7 +383,7 @@
     } catch (error) {
       const message = error instanceof ApiClientError ? error.message : '子任务创建失败';
       subtaskError = created
-        ? `子任务 ${created.task_key} 已创建，但评论或图片保存失败：${message}。请在子任务详情页补充。`
+        ? `子任务 ${created.task_key} 已创建，但评论或附件保存失败：${message}。请在子任务详情页补充。`
         : message;
     } finally {
       submitting = false;
@@ -557,8 +575,8 @@
     }
   }
 
-  // 选图后立刻上传:详情页图片直接落库,评论图片先进暂存区,提交时一并关联。
-  async function uploadImages(event: Event, into: 'task' | 'pending') {
+  // 选中文件后立刻上传:详情页文件直接落库,评论附件先进暂存区,提交时一并关联。
+  async function uploadFiles(event: Event, into: 'task' | 'pending') {
     const input = event.currentTarget as HTMLInputElement;
     const files = Array.from(input.files ?? []);
     input.value = '';
@@ -581,9 +599,9 @@
   async function removePending(item: Attachment) {
     pending = pending.filter((attachment) => attachment.id !== item.id);
     try {
-      await deleteAttachment(item.id, '评论未提交，撤回暂存图片');
+      await deleteAttachment(item.id, '评论未提交，撤回暂存附件');
     } catch {
-      errorMessage = '暂存图片已从评论移除，但服务端删除失败';
+      errorMessage = '暂存附件已从评论移除，但服务端删除失败';
     }
   }
 
@@ -729,14 +747,14 @@
             <h2>附件</h2>
             {#if attachments.length}<span class="count">{attachments.length}</span>{/if}
             <span class="spacer"></span>
-            <input type="file" multiple hidden bind:this={taskFileInput} onchange={(event) => uploadImages(event, 'task')} />
+            <input type="file" multiple hidden bind:this={taskFileInput} onchange={(event) => uploadFiles(event, 'task')} />
             <button class="ghost" type="button" disabled={uploading} onclick={() => taskFileInput?.click()}>
               {uploading ? '上传中…' : '＋ 上传附件'}
             </button>
           </div>
-          {#if attachments.some((item) => item.mime_type.startsWith('image/'))}
+          {#if attachments.some(isImageAttachment)}
             <div class="attachment-grid">
-              {#each attachments.filter((item) => item.mime_type.startsWith('image/')) as item (item.id)}
+              {#each attachments.filter(isImageAttachment) as item (item.id)}
                 <figure>
                   <a href={attachmentUrl(item.url)} target="_blank" rel="noreferrer">
                     <img src={attachmentUrl(item.url)} alt={item.file_name} loading="lazy" />
@@ -749,14 +767,14 @@
               {/each}
             </div>
           {/if}
-          {#if attachments.some((item) => !item.mime_type.startsWith('image/'))}
+          {#if attachments.some((item) => !isImageAttachment(item))}
             <div class="file-list">
-              {#each attachments.filter((item) => !item.mime_type.startsWith('image/')) as item (item.id)}
+              {#each attachments.filter((item) => !isImageAttachment(item)) as item (item.id)}
                 <div class="file-row">
                   <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name}>
-                    <span class="file-icon" aria-hidden="true">▤</span>
+                    <span class="file-icon" aria-hidden="true">{fileIcon(item.file_name)}</span>
                     <span class="file-title">{item.file_name}</span>
-                    <small>{(item.byte_size / 1024).toFixed(0)} KB</small>
+                    <small>{formatBytes(item.byte_size)}</small>
                   </a>
                   <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
                 </div>
@@ -764,7 +782,7 @@
             </div>
           {/if}
           {#if !attachments.length}
-            <p class="block-hint">图片直接预览,其他文件下载查看,单个不超过 10MB。</p>
+            <p class="block-hint">图片直接预览,日志和其他文件可下载查看,单个不超过 10MB。</p>
           {/if}
         </section>
 
@@ -777,9 +795,9 @@
           </div>
 
           <form class="composer" onsubmit={addComment}>
-            {#if pending.length}
+            {#if pending.some(isImageAttachment)}
               <div class="pending-images">
-                {#each pending as item (item.id)}
+                {#each pending.filter(isImageAttachment) as item (item.id)}
                   <span class="pending-image">
                     <img src={attachmentUrl(item.url)} alt={item.file_name} />
                     <button class="text-button" type="button" aria-label={`移除 ${item.file_name}`} onclick={() => removePending(item)}>×</button>
@@ -787,12 +805,26 @@
                 {/each}
               </div>
             {/if}
+            {#if pending.some((item) => !isImageAttachment(item))}
+              <div class="file-list pending-files">
+                {#each pending.filter((item) => !isImageAttachment(item)) as item (item.id)}
+                  <div class="file-row">
+                    <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name} target="_blank" rel="noreferrer">
+                      <span class="file-icon" aria-hidden="true">{fileIcon(item.file_name)}</span>
+                      <span class="file-title">{item.file_name}</span>
+                      <small>{formatBytes(item.byte_size)}</small>
+                    </a>
+                    <button class="text-button" type="button" aria-label={`移除 ${item.file_name}`} onclick={() => removePending(item)}>移除</button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
             <textarea bind:value={commentBody} rows="3" placeholder="添加评论…支持 @提及项目成员" aria-label="评论内容"></textarea>
             <div class="composer-foot">
-              <span class="hint">@名字 会给对方发站内通知</span>
-              <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden bind:this={commentFileInput} onchange={(event) => uploadImages(event, 'pending')} />
+              <span class="hint">@名字 会给对方发站内通知；支持图片、日志和其他文件</span>
+              <input type="file" multiple hidden bind:this={commentFileInput} onchange={(event) => uploadFiles(event, 'pending')} />
               <button class="secondary-button" type="button" disabled={uploading} onclick={() => commentFileInput?.click()}>
-                {uploading ? '上传中…' : '添加图片'}
+                {uploading ? '上传中…' : '添加文件'}
               </button>
               <button class="primary-button" type="submit" disabled={submitting}>评论</button>
             </div>
@@ -811,12 +843,25 @@
                       <button class="text-button" type="button" onclick={() => removeComment(item.comment)}>删除</button>
                     </div>
                     <p class="content">{@html renderComment(item.comment.body)}</p>
-                    {#if item.comment.attachments?.length}
+                    {#if item.comment.attachments?.some(isImageAttachment)}
                       <div class="comment-images">
-                        {#each item.comment.attachments as attachment (attachment.id)}
+                        {#each item.comment.attachments.filter(isImageAttachment) as attachment (attachment.id)}
                           <a href={attachmentUrl(attachment.url)} target="_blank" rel="noreferrer" title={attachment.file_name}>
                             <img src={attachmentUrl(attachment.url)} alt={attachment.file_name} loading="lazy" />
                           </a>
+                        {/each}
+                      </div>
+                    {/if}
+                    {#if item.comment.attachments?.some((attachment) => !isImageAttachment(attachment))}
+                      <div class="file-list comment-files">
+                        {#each item.comment.attachments.filter((attachment) => !isImageAttachment(attachment)) as attachment (attachment.id)}
+                          <div class="file-row">
+                            <a class="file-name" href={attachmentUrl(attachment.url)} target="_blank" rel="noreferrer" title={attachment.file_name}>
+                              <span class="file-icon" aria-hidden="true">{fileIcon(attachment.file_name)}</span>
+                              <span class="file-title">{attachment.file_name}</span>
+                              <small>{formatBytes(attachment.byte_size)}</small>
+                            </a>
+                          </div>
                         {/each}
                       </div>
                     {/if}
@@ -1126,21 +1171,31 @@
       <span>评论</span>
       <textarea bind:value={subtaskComment} rows="3" placeholder="添加创建说明或评论（可选）" aria-label="子任务评论"></textarea>
     </label>
-    <div class="subtask-images-field">
-      <span>图片</span>
-      {#if subtaskImages.length}
+    <div class="subtask-attachments-field">
+      <span>附件</span>
+      {#if subtaskFiles.some((item) => item.previewUrl)}
         <div class="subtask-image-previews">
-          {#each subtaskImages as image (image.url)}
+          {#each subtaskFiles.filter((item) => item.previewUrl) as item (item.file.name + item.file.lastModified)}
             <span class="subtask-image-preview">
-              <img src={image.url} alt={image.file.name} />
-              <button type="button" aria-label={`移除 ${image.file.name}`} onclick={() => removeSubtaskImage(image)}>×</button>
+              <img src={item.previewUrl ?? ''} alt={item.file.name} />
+              <button type="button" aria-label={`移除 ${item.file.name}`} onclick={() => removeSubtaskFile(item)}>×</button>
             </span>
           {/each}
         </div>
       {/if}
-      <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden bind:this={subtaskImageInput} onchange={addSubtaskImages} />
-      <button class="secondary-button" type="button" onclick={() => subtaskImageInput?.click()} disabled={submitting}>添加图片</button>
-      <small>支持 PNG、JPG、GIF、WebP。填写评论时，图片会附在该评论中。</small>
+      {#if subtaskFiles.some((item) => !item.previewUrl)}
+        <div class="file-list subtask-files">
+          {#each subtaskFiles.filter((item) => !item.previewUrl) as item (item.file.name + item.file.lastModified)}
+            <div class="file-row">
+              <span class="file-name"><span class="file-icon" aria-hidden="true">{fileIcon(item.file.name)}</span><span class="file-title">{item.file.name}</span><small>{formatBytes(item.file.size)}</small></span>
+              <button class="text-button" type="button" aria-label={`移除 ${item.file.name}`} onclick={() => removeSubtaskFile(item)}>移除</button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+      <input type="file" multiple hidden bind:this={subtaskFileInput} onchange={addSubtaskFiles} />
+      <button class="secondary-button" type="button" onclick={() => subtaskFileInput?.click()} disabled={submitting}>添加文件</button>
+      <small>支持图片、日志及其他文件，单个文件不超过 10MB。填写评论时，附件会附在该评论中。</small>
     </div>
     {#if subtaskError}<p class="error-message" role="alert">{subtaskError}</p>{/if}
   </form>
@@ -1274,6 +1329,7 @@
   .composer-foot .hint { font-size: 12px; color: var(--color-text-muted); flex: 1; }
   .composer-foot .secondary-button, .composer-foot .primary-button { border: 0; }
   .pending-images { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pending-files, .comment-files, .subtask-files { margin-top: 8px; }
   .pending-image { position: relative; display: block; width: 96px; height: 72px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
   .pending-image button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 14px; border-radius: var(--radius-sm); }
   .feed { display: grid; gap: 2px; }
@@ -1352,8 +1408,8 @@
 
   /* ── 子任务弹窗 ── */
   .subtask-modal-form { display: grid; gap: 14px; }
-  .subtask-modal-form label, .subtask-images-field { display: grid; gap: 6px; }
-  .subtask-modal-form label > span, .subtask-images-field > span { color: var(--color-text-secondary); font-size: 13px; font-weight: 500; }
+  .subtask-modal-form label, .subtask-attachments-field { display: grid; gap: 6px; }
+  .subtask-modal-form label > span, .subtask-attachments-field > span { color: var(--color-text-secondary); font-size: 13px; font-weight: 500; }
   .subtask-modal-form em { color: var(--color-danger); font-style: normal; }
   .subtask-modal-form input, .subtask-modal-form textarea { width: 100%; min-width: 0; }
   .subtask-modal-form textarea { resize: vertical; }
@@ -1362,7 +1418,7 @@
   .subtask-image-preview { position: relative; display: block; width: 88px; height: 66px; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
   .subtask-image-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
   .subtask-image-preview button { position: absolute; top: 2px; right: 2px; display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.65); color: #fff; cursor: pointer; }
-  .subtask-images-field small { color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
+  .subtask-attachments-field small { color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
   .error-message { color: var(--color-danger); font-size: 13px; }
 
   .state-box { display: grid; place-items: center; gap: 12px; min-height: 220px; }

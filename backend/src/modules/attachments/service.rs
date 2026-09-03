@@ -1,4 +1,4 @@
-//! 任务附件:图片写入本地磁盘、按不可猜的 object_key 公开读取、软删除与审计。
+//! 任务附件:图片与普通文件写入本地磁盘、按不可猜的 object_key 公开读取、软删除与审计。
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -80,13 +80,20 @@ fn safe_extension(file_name: Option<&str>) -> String {
     }
 }
 
-/// 声明 content_type 规范化:截掉 ; 参数,空白视为未声明,兜底 octet-stream。
+/// 声明 content_type 规范化:截掉 ; 参数,空白/过长/伪装图片类型兜底 octet-stream。
+///
+/// 普通文件的 MIME 来自客户端,不能据此把未嗅探出的内容标成 image/*;
+/// 否则 SVG 或伪装成 image/png 的脚本文件会被 content 接口 inline 返回。
 fn normalize_declared_mime(content_type: Option<&str>) -> String {
-    content_type
+    let mime = content_type
         .map(|value| value.split(';').next().unwrap_or("").trim())
         .filter(|value| !value.is_empty())
-        .unwrap_or("application/octet-stream")
-        .to_owned()
+        .unwrap_or("application/octet-stream");
+    if mime.len() > 64 || mime.to_ascii_lowercase().starts_with("image/") {
+        "application/octet-stream".to_owned()
+    } else {
+        mime.to_owned()
+    }
 }
 
 /// 展示用文件名:只保留最终路径段,截断到 200 字符。
@@ -394,4 +401,49 @@ pub async fn views_for_comments(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unverified_image_mime_is_downgraded_to_download() {
+        assert_eq!(
+            normalize_declared_mime(Some("image/svg+xml")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            normalize_declared_mime(Some("image/png")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            normalize_declared_mime(Some("IMAGE/svg+xml")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn declared_mime_parameters_and_invalid_values_are_normalized() {
+        assert_eq!(
+            normalize_declared_mime(Some("text/plain; charset=utf-8")),
+            "text/plain"
+        );
+        assert_eq!(
+            normalize_declared_mime(Some("   ")),
+            "application/octet-stream"
+        );
+        assert_eq!(normalize_declared_mime(None), "application/octet-stream");
+        assert_eq!(
+            normalize_declared_mime(Some(&"a".repeat(65))),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn generic_extensions_are_safe() {
+        assert_eq!(safe_extension(Some("server.LOG")), "log");
+        assert_eq!(safe_extension(Some("report.tar.gz")), "gz");
+        assert_eq!(safe_extension(Some("../../secret")), "bin");
+    }
 }
