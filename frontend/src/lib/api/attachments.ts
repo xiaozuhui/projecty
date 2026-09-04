@@ -1,4 +1,5 @@
 import { API_BASE_URL, apiGet, apiPost, apiPutBinary, apiUpload, ApiClientError } from './client';
+import { sha256HexFallback } from '$lib/sha256';
 import type { Attachment, UploadSession } from './types';
 
 const key = (value: string) => encodeURIComponent(value);
@@ -61,8 +62,13 @@ export function abortAttachmentUpload(uploadId: string) {
 }
 
 export async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', buffer);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  // 安全上下文(HTTPS/localhost)走 WebCrypto;纯 HTTP 部署下 crypto.subtle 不存在,
+  // 回退到纯 JS 实现,否则分片上传第一步就算校验和抛错,表现为 0 B 即失败。
+  if (globalThis.crypto?.subtle) {
+    const digest = await crypto.subtle.digest('SHA-256', buffer);
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  return sha256HexFallback(new Uint8Array(buffer));
 }
 
 /// 断点续传匹配指纹:后端限制 ≤128 个可打印 ASCII 字符,超长时折叠为 FNV-1a 哈希。
