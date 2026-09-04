@@ -1,3 +1,5 @@
+pub use crate::attachment_upload_chunks::Entity as AttachmentUploadChunks;
+pub use crate::attachment_upload_sessions::Entity as AttachmentUploadSessions;
 pub use crate::department_closure::Entity as DepartmentClosure;
 pub use crate::departments::Entity as Departments;
 pub use crate::jwt_refresh_tokens::Entity as JwtRefreshTokens;

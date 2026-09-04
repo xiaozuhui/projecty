@@ -12,8 +12,11 @@ pub struct Config {
     pub access_token_ttl_seconds: u64,
     pub refresh_token_ttl_seconds: u64,
     pub upload_dir: PathBuf,
-    pub upload_max_bytes: usize,
 }
+
+/// 附件上传总上限(50MB)与单分片大小(5MB):产品约定直接写死,不走环境变量。
+pub const UPLOAD_MAX_BYTES: usize = 52_428_800;
+pub const UPLOAD_CHUNK_BYTES: usize = 5_242_880;
 
 impl Config {
     pub fn from_env() -> Result<Self> {
@@ -38,10 +41,6 @@ impl Config {
             upload_dir: env::var("PROJECTY_UPLOAD_DIR")
                 .unwrap_or_else(|_| "uploads".to_owned())
                 .into(),
-            upload_max_bytes: env::var("PROJECTY_UPLOAD_MAX_BYTES")
-                .unwrap_or_else(|_| "10485760".to_owned())
-                .parse()
-                .context("PROJECTY_UPLOAD_MAX_BYTES must be a valid integer")?,
         })
     }
     pub fn bind_addr(&self) -> Result<SocketAddr> {

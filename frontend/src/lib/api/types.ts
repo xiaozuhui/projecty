@@ -30,6 +30,7 @@ export type ProjectDepartmentGrantListResponse = { items: ProjectDepartmentGrant
 export type Milestone = { id: string; project_id: string; name: string; due_date: string | null; is_reached: boolean; task_total: number; task_done: number; created_at: string; updated_at: string; deleted_at: string | null };
 export type MilestoneListResponse = { items: Milestone[] };
 export type Attachment = { id: string; task_id: string; comment_id: string | null; file_name: string; object_key: string; mime_type: string; byte_size: number; uploader_id: string; uploader_name: string; url: string; created_at: string };
+export type UploadSession = { upload_id: string; status: string; chunk_size: number; total_bytes: number; total_chunks: number; received_chunks: number[] };
 export type Comment = { id: string; task_id: string; author_id: string; author_name: string; body: string; created_at: string; updated_at: string; deleted_at: string | null; attachments: Attachment[] };
 export type OperationLog = { id: string; actor_user_id: string; module: string; action: string; project_id: string | null; task_id: string | null; target_type: string; target_id: string | null; summary: string; diff: unknown; snapshot: unknown; created_at: string };
 export type AuditListResponse = { items: OperationLog[]; page: number; page_size: number; has_more: boolean };

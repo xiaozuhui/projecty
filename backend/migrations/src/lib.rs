@@ -15,6 +15,7 @@ mod m20260903_000011_task_type;
 mod m20260903_000012_task_labels;
 mod m20260903_000013_task_dependencies;
 mod m20260903_000014_notifications;
+mod m20260904_000015_attachment_upload_sessions;
 
 pub struct Migrator;
 
@@ -36,6 +37,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260903_000012_task_labels::Migration),
             Box::new(m20260903_000013_task_dependencies::Migration),
             Box::new(m20260903_000014_notifications::Migration),
+            Box::new(m20260904_000015_attachment_upload_sessions::Migration),
         ]
     }
 }

@@ -9,7 +9,7 @@
   import { listStatuses, listProjectMembers } from '$lib/api/projects';
   import { listMilestones } from '$lib/api/milestones';
   import { listTaskLogs } from '$lib/api/audit';
-  import { deleteAttachment, listTaskAttachments, uploadTaskAttachment, attachmentUrl } from '$lib/api/attachments';
+  import { deleteAttachment, listTaskAttachments, uploadTaskAttachmentResumable, downloadAttachmentSegmented, MAX_ATTACHMENT_BYTES, attachmentUrl } from '$lib/api/attachments';
   import { addDependency, addTaskLabel, copyTask, createComment, createSubtask, deleteComment, deleteTask, getSubtasks, getTask, listComments, listDependencies, listLabels, listTasks, removeDependency, removeTaskLabel, transitionTask, updateTask } from '$lib/api/tasks';
   import type { Attachment, Comment, LabelView, Milestone, OperationLog, Priority, ProjectMember, ProjectStatus, TaskDependencies, TaskView } from '$lib/api/types';
   import MemberPicker from '$lib/features/task-list/MemberPicker.svelte';
@@ -68,7 +68,6 @@
   let quickSubtaskTitle = $state('');
   let loading = $state(true);
   let submitting = $state(false);
-  let uploading = $state(false);
   let deleting = $state(false);
   let reparenting = $state(false);
   let errorMessage = $state('');
@@ -78,6 +77,40 @@
   // 行内编辑挂载后自动聚焦:标题全选,描述落在文末。
   let titleInputEl = $state<HTMLInputElement | null>(null);
   let descInputEl = $state<HTMLTextAreaElement | null>(null);
+  // 分片上传进行中的任务列表:任务/评论附件在附件区显示进度条,子任务弹窗附件在底部按钮显示总进度。
+  type UploadTask = {
+    key: string;
+    name: string;
+    size: number;
+    uploadedBytes: number;
+    speedBps: number;
+    retries: number;
+    error: string | null;
+    done: boolean;
+    cancelled: boolean;
+    scope: 'task' | 'subtask';
+    controller: AbortController;
+  };
+  let uploadTasks = $state<UploadTask[]>([]);
+  const uploading = $derived(uploadTasks.some((item) => !item.done));
+  const subtaskUploadPercent = $derived.by(() => {
+    const scoped = uploadTasks.filter((item) => item.scope === 'subtask');
+    if (!scoped.length) return null;
+    const total = scoped.reduce((sum, item) => sum + item.size, 0);
+    const done = scoped.reduce((sum, item) => sum + item.uploadedBytes, 0);
+    return total > 0 ? Math.floor((done / total) * 100) : 0;
+  });
+  // 大文件分段下载进度:按附件 id 记录,仅在下载期间存在。
+  const SEGMENTED_DOWNLOAD_THRESHOLD = 8 * 1024 * 1024;
+  let downloads = $state<Record<string, { received: number; total: number }>>({});
+  const isSegmentedDownload = (attachment: Attachment) =>
+    !isImageAttachment(attachment) && attachment.byte_size > SEGMENTED_DOWNLOAD_THRESHOLD;
+  const downloadPercent = (attachment: Attachment) => {
+    const progress = downloads[attachment.id];
+    return progress && progress.total > 0
+      ? Math.min(100, Math.floor((progress.received / progress.total) * 100))
+      : 0;
+  };
   $effect(() => {
     if (editingTitle && titleInputEl) {
       titleInputEl.focus();
@@ -370,9 +403,26 @@
       })).data;
 
       const createdTaskKey = created.task_key;
-      const uploaded = await Promise.all(
-        subtaskFiles.map(({ file }) => uploadTaskAttachment(createdTaskKey, file).then((response) => response.data))
-      );
+      const uploaded: Attachment[] = [];
+      for (const { file } of subtaskFiles) {
+        const tracked = startUpload(file, 'subtask');
+        try {
+          uploaded.push(
+            await uploadTaskAttachmentResumable(createdTaskKey, file, {
+              onProgress: (progress) => {
+                tracked.uploadedBytes = progress.uploadedBytes;
+                tracked.speedBps = progress.speedBps;
+                tracked.retries = progress.retries;
+              }
+            })
+          );
+        } catch (error) {
+          tracked.error = error instanceof Error ? error.message : '附件上传失败';
+          throw error;
+        } finally {
+          tracked.done = true;
+        }
+      }
       if (subtaskComment.trim()) {
         await createComment(created.task_key, subtaskComment.trim(), uploaded.map((attachment) => attachment.id));
       }
@@ -576,23 +626,84 @@
   }
 
   // 选中文件后立刻上传:详情页文件直接落库,评论附件先进暂存区,提交时一并关联。
+  // 分片上传带进度/取消,失败后重选同一文件可从已传分片续传。
   async function uploadFiles(event: Event, into: 'task' | 'pending') {
     const input = event.currentTarget as HTMLInputElement;
     const files = Array.from(input.files ?? []);
     input.value = '';
     if (!files.length) return;
-    uploading = true;
     errorMessage = '';
-    try {
-      for (const file of files) {
-        const created = (await uploadTaskAttachment(taskKey, file)).data;
+    uploadTasks = uploadTasks.filter((item) => !item.done);
+    for (const file of files) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        errorMessage = `${file.name} 超过 50MB 上限`;
+        continue;
+      }
+      const tracked = startUpload(file, 'task');
+      try {
+        const created = await uploadTaskAttachmentResumable(taskKey, file, {
+          signal: tracked.controller.signal,
+          onProgress: (progress) => {
+            tracked.uploadedBytes = progress.uploadedBytes;
+            tracked.speedBps = progress.speedBps;
+            tracked.retries = progress.retries;
+          }
+        });
         if (into === 'task') attachments = [...attachments, created];
         else pending = [...pending, created];
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          tracked.cancelled = true;
+        } else {
+          tracked.error = error instanceof ApiClientError ? error.message : '附件上传失败';
+          errorMessage = `${file.name}：${tracked.error}`;
+        }
+      } finally {
+        tracked.done = true;
       }
+    }
+  }
+
+  // 入队一个上传任务并返回其代理引用(回调里原地更新进度)。
+  function startUpload(file: File, scope: 'task' | 'subtask'): UploadTask {
+    const entry: UploadTask = {
+      key: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      size: file.size,
+      uploadedBytes: 0,
+      speedBps: 0,
+      retries: 0,
+      error: null,
+      done: false,
+      cancelled: false,
+      scope,
+      controller: new AbortController()
+    };
+    uploadTasks = [...uploadTasks, entry];
+    return uploadTasks[uploadTasks.length - 1];
+  }
+
+  function cancelUpload(item: UploadTask) {
+    item.controller.abort();
+  }
+
+  // 大附件分段下载:按 Range 分段拉取并展示百分比,完成后触发浏览器保存。
+  async function saveAttachment(item: Attachment) {
+    if (downloads[item.id]) return;
+    downloads[item.id] = { received: 0, total: item.byte_size };
+    errorMessage = '';
+    try {
+      await downloadAttachmentSegmented(attachmentUrl(item.url), item.file_name, item.byte_size, {
+        onProgress: (progress) => {
+          downloads[item.id] = { received: progress.receivedBytes, total: progress.totalBytes };
+        }
+      });
     } catch (error) {
-      errorMessage = error instanceof ApiClientError ? error.message : '附件上传失败';
+      errorMessage =
+        error instanceof Error && error.message ? `${item.file_name}：${error.message}` : `${item.file_name} 下载失败`;
     } finally {
-      uploading = false;
+      const { [item.id]: _removed, ...rest } = downloads;
+      downloads = rest;
     }
   }
 
@@ -771,18 +882,49 @@
             <div class="file-list">
               {#each attachments.filter((item) => !isImageAttachment(item)) as item (item.id)}
                 <div class="file-row">
-                  <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name}>
-                    <span class="file-icon" aria-hidden="true">{fileIcon(item.file_name)}</span>
-                    <span class="file-title">{item.file_name}</span>
-                    <small>{formatBytes(item.byte_size)}</small>
-                  </a>
+                  {#if isSegmentedDownload(item)}
+                    <button class="file-name as-button" type="button" title={item.file_name} disabled={Boolean(downloads[item.id])} onclick={() => saveAttachment(item)}>
+                      <span class="file-icon" aria-hidden="true">{fileIcon(item.file_name)}</span>
+                      <span class="file-title">{item.file_name}</span>
+                      <small>{downloads[item.id] ? `下载中 ${downloadPercent(item)}%` : formatBytes(item.byte_size)}</small>
+                    </button>
+                  {:else}
+                    <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name}>
+                      <span class="file-icon" aria-hidden="true">{fileIcon(item.file_name)}</span>
+                      <span class="file-title">{item.file_name}</span>
+                      <small>{formatBytes(item.byte_size)}</small>
+                    </a>
+                  {/if}
                   <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
                 </div>
               {/each}
             </div>
           {/if}
+          {#if uploadTasks.some((item) => item.scope === 'task')}
+            <div class="upload-strip">
+              {#each uploadTasks.filter((item) => item.scope === 'task') as item (item.key)}
+                <div class="upload-row" class:failed={Boolean(item.error) || item.cancelled}>
+                  <span class="file-icon" aria-hidden="true">{fileIcon(item.name)}</span>
+                  <span class="upload-meta">
+                    <span class="upload-name" title={item.name}>{item.name}</span>
+                    <span class="upload-bar"><i style:width={`${item.size > 0 ? Math.min(100, (item.uploadedBytes / item.size) * 100) : 0}%`}></i></span>
+                    <small>
+                      {formatBytes(item.uploadedBytes)} / {formatBytes(item.size)}
+                      {#if !item.done && item.speedBps > 0} · {formatBytes(item.speedBps)}/s{/if}
+                      {#if !item.done && item.retries > 0} · 重试中{/if}
+                    </small>
+                    {#if item.error}<small class="upload-error">{item.error}</small>{/if}
+                    {#if item.cancelled}<small class="upload-error">已取消</small>{/if}
+                  </span>
+                  {#if !item.done}
+                    <button class="text-button" type="button" onclick={() => cancelUpload(item)}>取消</button>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
           {#if !attachments.length}
-            <p class="block-hint">图片直接预览,日志和其他文件可下载查看,单个不超过 10MB。</p>
+            <p class="block-hint">图片直接预览,日志和其他文件可下载查看,单个不超过 50MB,支持断点续传。</p>
           {/if}
         </section>
 
@@ -856,11 +998,19 @@
                       <div class="file-list comment-files">
                         {#each item.comment.attachments.filter((attachment) => !isImageAttachment(attachment)) as attachment (attachment.id)}
                           <div class="file-row">
-                            <a class="file-name" href={attachmentUrl(attachment.url)} target="_blank" rel="noreferrer" title={attachment.file_name}>
-                              <span class="file-icon" aria-hidden="true">{fileIcon(attachment.file_name)}</span>
-                              <span class="file-title">{attachment.file_name}</span>
-                              <small>{formatBytes(attachment.byte_size)}</small>
-                            </a>
+                            {#if isSegmentedDownload(attachment)}
+                              <button class="file-name as-button" type="button" title={attachment.file_name} disabled={Boolean(downloads[attachment.id])} onclick={() => saveAttachment(attachment)}>
+                                <span class="file-icon" aria-hidden="true">{fileIcon(attachment.file_name)}</span>
+                                <span class="file-title">{attachment.file_name}</span>
+                                <small>{downloads[attachment.id] ? `下载中 ${downloadPercent(attachment)}%` : formatBytes(attachment.byte_size)}</small>
+                              </button>
+                            {:else}
+                              <a class="file-name" href={attachmentUrl(attachment.url)} target="_blank" rel="noreferrer" title={attachment.file_name}>
+                                <span class="file-icon" aria-hidden="true">{fileIcon(attachment.file_name)}</span>
+                                <span class="file-title">{attachment.file_name}</span>
+                                <small>{formatBytes(attachment.byte_size)}</small>
+                              </a>
+                            {/if}
                           </div>
                         {/each}
                       </div>
@@ -1195,14 +1345,14 @@
       {/if}
       <input type="file" multiple hidden bind:this={subtaskFileInput} onchange={addSubtaskFiles} />
       <button class="secondary-button" type="button" onclick={() => subtaskFileInput?.click()} disabled={submitting}>添加文件</button>
-      <small>支持图片、日志及其他文件，单个文件不超过 10MB。填写评论时，附件会附在该评论中。</small>
+      <small>支持图片、日志及其他文件，单个文件不超过 50MB,支持断点续传。填写评论时，附件会附在该评论中。</small>
     </div>
     {#if subtaskError}<p class="error-message" role="alert">{subtaskError}</p>{/if}
   </form>
   {#snippet footer()}
     <button class="secondary-button" type="button" onclick={closeSubtaskModal} disabled={submitting}>取消</button>
     <button class="primary-button" type="submit" form="create-subtask-form" disabled={submitting}>
-      {submitting ? '创建中…' : '创建子任务'}
+      {submitting ? (subtaskUploadPercent !== null ? `上传附件中 ${subtaskUploadPercent}%` : '创建中…') : '创建子任务'}
     </button>
   {/snippet}
 </Modal>
@@ -1314,6 +1464,20 @@
   .file-icon { color: var(--color-text-muted); }
   .file-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-name small { flex: none; color: var(--color-text-muted); font-size: 12px; }
+  /* 分段下载入口:大文件用按钮触发带进度的分段下载,小文件维持 <a> 直连 */
+  .file-name.as-button { background: none; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer; }
+  .file-name.as-button:hover .file-title { color: var(--color-primary); }
+  .file-name.as-button:disabled { cursor: default; }
+  /* 上传进度条 */
+  .upload-strip { display: grid; gap: 6px; margin-bottom: 10px; }
+  .upload-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); font-size: 13px; }
+  .upload-meta { display: grid; gap: 4px; flex: 1; min-width: 0; }
+  .upload-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .upload-bar { width: 100%; height: 4px; border-radius: 2px; background: var(--color-hover); overflow: hidden; }
+  .upload-bar i { display: block; height: 100%; background: var(--color-primary); transition: width 150ms ease; }
+  .upload-row.failed .upload-bar i { background: var(--color-danger); }
+  .upload-row small { color: var(--color-text-muted); font-size: 12px; font-family: var(--font-mono); }
+  .upload-error { color: var(--color-danger); }
   .text-button { border: 0; background: transparent; color: var(--color-danger); font-size: 12px; font-weight: 500; cursor: pointer; }
   .text-button:disabled { opacity: 0.5; cursor: not-allowed; }
 

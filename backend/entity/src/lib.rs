@@ -1,4 +1,6 @@
 pub use crate::departments::Entity as Departments;
+pub mod attachment_upload_chunks;
+pub mod attachment_upload_sessions;
 pub mod department_closure;
 pub mod departments;
 pub mod jwt_refresh_tokens;

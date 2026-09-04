@@ -15,6 +15,7 @@ pub struct Model {
     pub object_key: String,
     pub mime_type: String,
     pub byte_size: i64,
+    pub sha256: Option<String>,
     pub created_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
 }

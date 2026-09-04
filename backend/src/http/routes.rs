@@ -1,5 +1,5 @@
 use crate::{modules, state::AppState};
-use axum::{routing::get, Json, Router};
+use axum::{Json, Router, routing::get};
 use serde_json::json;
 
 pub fn api_router() -> Router<AppState> {

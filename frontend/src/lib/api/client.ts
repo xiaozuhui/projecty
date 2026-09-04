@@ -118,3 +118,23 @@ export async function apiDownload(path: string, token?: string, allowRefresh = t
 export function apiUpload<T>(path: string, form: FormData): Promise<ApiEnvelope<T>> {
   return request<T>(path, { method: 'POST', body: form });
 }
+
+/// 二进制请求体(分片上传):request 会给非 FormData body 强设 JSON Content-Type,故单独实现。
+export async function apiPutBinary<T>(
+  path: string,
+  body: Blob,
+  extraHeaders: Record<string, string> = {},
+  signal?: AbortSignal,
+  allowRefresh = true
+): Promise<ApiEnvelope<T>> {
+  const headers = new Headers({ 'Content-Type': 'application/octet-stream', ...extraHeaders });
+  if (session.accessToken) headers.set('Authorization', `Bearer ${session.accessToken}`);
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: 'PUT', body, headers, signal });
+  if (response.status === 401 && allowRefresh && session.refreshToken) {
+    const refreshed = await refreshSession();
+    if (refreshed) return apiPutBinary<T>(path, body, extraHeaders, signal, false);
+    session.clear();
+  }
+  if (!response.ok) throw await parseError(response);
+  return parseEnvelope<T>(await response.json());
+}

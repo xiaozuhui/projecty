@@ -1,0 +1,198 @@
+use sea_orm_migration::prelude::*;
+
+/// 附件分片上传:会话表 + 分片回执表(复合主键),并为已落盘附件补 sha256 供 ETag/If-Range 使用。
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(AttachmentUploadSessions::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::TaskId)
+                            .uuid()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::UploaderId)
+                            .uuid()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::ClientFileKey)
+                            .string_len(128)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::FileName)
+                            .string_len(200)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::DeclaredMime)
+                            .string_len(64)
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::TotalBytes)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::ChunkSize)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::Status)
+                            .string_len(16)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::AttachmentId)
+                            .uuid()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::ClientSha256)
+                            .string_len(64)
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadSessions::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_upload_sessions_resume")
+                    .table(AttachmentUploadSessions::Table)
+                    .col(AttachmentUploadSessions::UploaderId)
+                    .col(AttachmentUploadSessions::TaskId)
+                    .col(AttachmentUploadSessions::ClientFileKey)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_upload_sessions_updated")
+                    .table(AttachmentUploadSessions::Table)
+                    .col(AttachmentUploadSessions::UpdatedAt)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_table(
+                Table::create()
+                    .table(AttachmentUploadChunks::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(AttachmentUploadChunks::SessionId)
+                            .uuid()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadChunks::ChunkIndex)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AttachmentUploadChunks::ReceivedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .primary_key(
+                        Index::create()
+                            .col(AttachmentUploadChunks::SessionId)
+                            .col(AttachmentUploadChunks::ChunkIndex),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(TaskAttachments::Table)
+                    .add_column(ColumnDef::new(TaskAttachments::Sha256).string_len(64))
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(TaskAttachments::Table)
+                    .drop_column(TaskAttachments::Sha256)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(AttachmentUploadChunks::Table)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(AttachmentUploadSessions::Table)
+                    .to_owned(),
+            )
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum AttachmentUploadSessions {
+    Table,
+    Id,
+    TaskId,
+    UploaderId,
+    ClientFileKey,
+    FileName,
+    DeclaredMime,
+    TotalBytes,
+    ChunkSize,
+    Status,
+    AttachmentId,
+    ClientSha256,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum AttachmentUploadChunks {
+    Table,
+    SessionId,
+    ChunkIndex,
+    ReceivedAt,
+}
+
+#[derive(DeriveIden)]
+enum TaskAttachments {
+    Table,
+    Sha256,
+}
