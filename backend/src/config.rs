@@ -12,6 +12,7 @@ pub struct Config {
     pub access_token_ttl_seconds: u64,
     pub refresh_token_ttl_seconds: u64,
     pub upload_dir: PathBuf,
+    pub static_dir: PathBuf,
 }
 
 /// 附件上传总上限(50MB)与单分片大小(5MB):产品约定直接写死,不走环境变量。
@@ -40,6 +41,9 @@ impl Config {
                 .context("REFRESH_TOKEN_TTL_SECONDS must be a valid integer")?,
             upload_dir: env::var("PROJECTY_UPLOAD_DIR")
                 .unwrap_or_else(|_| "uploads".to_owned())
+                .into(),
+            static_dir: env::var("PROJECTY_STATIC_DIR")
+                .unwrap_or_else(|_| "static".to_owned())
                 .into(),
         })
     }

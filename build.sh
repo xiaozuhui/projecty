@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 编译前后端 Docker 镜像。
-# tag 名与 deploy/docker/compose.yml 引用的 image 保持一致(projecty-backend / projecty-frontend)。
+# 编译项目 Docker 镜像(后端 API + 前端静态产物合并为单镜像)。
+# tag 名与 deploy/docker/compose.yml 引用的 image 保持一致(projecty-backend)。
 #
 # 用法:
 #   ./build.sh                # 编译 backend + frontend,打 latest tag(compose 使用的就是它)
@@ -25,7 +25,7 @@ fi
 
 cd "$ROOT"
 
-for name in backend frontend; do
+for name in backend; do
   echo "==> 构建 projecty-${name}:${TAG}"
   docker build \
     "${platform_args[@]+"${platform_args[@]}"}" \

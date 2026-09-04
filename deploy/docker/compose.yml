@@ -17,10 +17,11 @@ services:
       timeout: 5s
       retries: 12
 
+  # 单镜像 = 后端 API + 前端静态产物(axum 直接托管 SPA),无独立前端容器。
   backend:
     image: projecty-backend:latest
     ports:
-      - "${PROJECTY_BACKEND_PORT:-28081}:8080"
+      - "${PROJECTY_BACKEND_PORT:-28080}:8080"
     networks:
       - projecty-net
     volumes:
@@ -38,27 +39,9 @@ services:
       postgres:
         condition: service_healthy
 
-  frontend:
-    image: projecty-frontend:latest
-    networks:
-      - projecty-net
-    ports:
-      - "${PROJECTY_FRONTEND_PORT:-28080}:3000"
-    environment:
-      HOST: 0.0.0.0
-      PORT: 3000
-      NODE_ENV: production
-      # 浏览器走同源相对路径,由前端容器代理到 docker 网络内的后端
-      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-/api/v1}
-      INTERNAL_API_ORIGIN: ${INTERNAL_API_ORIGIN:-http://backend:8080}
-    depends_on:
-      - backend
-
 volumes:
   projecty-postgres:
   projecty-uploads:
 
 networks:
   projecty-net:
-    name: projecty-net
-    driver: bridge
