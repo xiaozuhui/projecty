@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>附件展示重设计 · 预览稿</title>
+<!--
+  设计稿:任务详情页「附件」区块的两种重设计方案,供对比选型,不参与构建。
+  设计令牌与 src/lib/styles/tokens.css 保持一致(暗色默认)。
+  浏览器直接打开即可;顶部可切换方案 A(统一卡片网格)/ 方案 B(统一紧凑列表),
+  进度条/速度为演示动画,数据均为示例。
+-->
+<style>
+  :root {
+    color-scheme: dark;
+    --color-bg: #0f1011;
+    --color-surface: #131416;
+    --color-surface-raised: #1a1c1f;
+    --color-surface-sunken: #08090a;
+    --color-border: #2a2e33;
+    --color-border-strong: #383b3f;
+    --color-border-weak: #24282c;
+    --color-text: #f7f8f8;
+    --color-text-secondary: #d0d6e0;
+    --color-text-muted: #8a8f98;
+    --color-primary: #5e6ad2;
+    --color-primary-strong: #7b86dd;
+    --color-primary-soft: rgba(94, 106, 210, 0.16);
+    --color-success: #5bb98b;
+    --color-warning: #f2994a;
+    --color-danger: #eb5757;
+    --color-hover: rgba(255, 255, 255, 0.05);
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --font-ui: "Inter", "PingFang SC", "HarmonyOS Sans SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "SF Mono", "SFMono-Regular", "Cascadia Code", "JetBrains Mono", Menlo, monospace;
+    --transition-fast: 120ms ease;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 20px 80px;
+    background: var(--color-bg); color: var(--color-text);
+    font: 14px/1.5 var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+  .stage { max-width: 880px; margin: 0 auto; }
+
+  /* ── 预览稿说明条 ── */
+  .draft-note {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; margin-bottom: 26px;
+    background: var(--color-primary-soft);
+    border: 1px solid rgba(94, 106, 210, 0.35); border-radius: var(--radius-md);
+    font-size: 12.5px; color: var(--color-text-secondary);
+  }
+  .draft-note .spacer { flex: 1; }
+  .scheme-switch { display: inline-flex; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
+  .scheme-switch button {
+    border: 0; padding: 5px 14px; cursor: pointer;
+    background: transparent; color: var(--color-text-muted);
+    font: 500 12.5px var(--font-ui); transition: background var(--transition-fast), color var(--transition-fast);
+  }
+  .scheme-switch button.on { background: var(--color-surface-raised); color: var(--color-text); }
+
+  /* ── 附件区块外壳(与任务详情页 block 一致) ── */
+  .block { background: var(--color-surface); border: 1px solid var(--color-border-weak); border-radius: var(--radius-lg); padding: 18px 20px; }
+  .block-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .block-head h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
+  .count {
+    min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+    background: var(--color-surface-raised); border: 1px solid var(--color-border);
+    color: var(--color-text-muted); font-size: 11px; font-weight: 600; line-height: 16px; text-align: center;
+  }
+  .summary { color: var(--color-text-muted); font-size: 12px; font-family: var(--font-mono); }
+  .spacer { flex: 1; }
+  .ghost {
+    border: 1px solid var(--color-border); border-radius: var(--radius-md); background: transparent;
+    color: var(--color-text-secondary); padding: 4px 12px; font: 500 12.5px var(--font-ui); cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .ghost:hover { background: var(--color-hover); border-color: var(--color-border-strong); }
+
+  /* ── 通用小组件 ── */
+  .icon-button {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border: 0; border-radius: var(--radius-sm);
+    background: transparent; color: var(--color-text-muted); cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+  .icon-button:hover { background: var(--color-hover); color: var(--color-text); }
+  .icon-button.danger:hover { color: var(--color-danger); }
+  .icon-button svg, .chip svg { width: 14px; height: 14px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid var(--color-border); border-radius: var(--radius-md);
+    background: transparent; color: var(--color-text-secondary);
+    padding: 3px 10px; font: 500 12px var(--font-ui); cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .chip:hover { background: var(--color-hover); border-color: var(--color-border-strong); }
+  .chip.danger:hover { color: var(--color-danger); border-color: rgba(235, 87, 87, 0.45); }
+  .ext-badge {
+    display: inline-block; padding: 2px 6px; border-radius: var(--radius-sm);
+    background: var(--color-primary-soft); color: var(--color-primary-strong);
+    font: 600 9.5px var(--font-mono); letter-spacing: 0.06em;
+  }
+  .size { color: var(--color-text-muted); font-size: 11px; font-family: var(--font-mono); }
+  .scheme-caption { margin: 10px 2px 0; color: var(--color-text-muted); font-size: 12px; }
+  .scheme-caption b { color: var(--color-text-secondary); font-weight: 600; }
+
+  /* ══════════ 方案 A:统一卡片网格 ══════════ */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 12px; }
+  .card {
+    display: flex; flex-direction: column; min-width: 0;
+    background: var(--color-surface-sunken);
+    border: 1px solid var(--color-border-weak); border-radius: var(--radius-md);
+    overflow: hidden; transition: border-color var(--transition-fast);
+  }
+  .card:hover { border-color: var(--color-border-strong); }
+  .card.failed { border-color: rgba(235, 87, 87, 0.55); }
+  .card-face {
+    position: relative; aspect-ratio: 4 / 3; overflow: hidden;
+    background: var(--color-surface-raised);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card-face img, .card-face svg.thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  /* 非图片:居中文件图标 + 右上角类型徽标 */
+  .file-glyph { color: var(--color-text-muted); opacity: 0.9; }
+  .file-glyph svg { width: 44px; height: 44px; }
+  .card-face .ext-badge { position: absolute; top: 8px; right: 8px; }
+  /* 图片 hover 时的操作角标 */
+  .hover-tools {
+    position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; padding: 3px;
+    border-radius: var(--radius-md); background: rgba(8, 9, 10, 0.78);
+    backdrop-filter: blur(4px);
+    opacity: 0; transition: opacity var(--transition-fast);
+  }
+  .card:hover .hover-tools, .card:focus-within .hover-tools { opacity: 1; }
+  .hover-tools .icon-button { color: #cfd4dc; width: 22px; height: 22px; }
+  .hover-tools .icon-button:hover { background: rgba(255, 255, 255, 0.12); }
+  /* 上传中:面罩 + 环形进度 */
+  .ring { position: relative; width: 64px; height: 64px; }
+  .ring svg { width: 64px; height: 64px; transform: rotate(-90deg); }
+  .ring circle { fill: none; stroke-width: 4; }
+  .ring .track { stroke: var(--color-border); }
+  .ring .value { stroke: var(--color-primary); stroke-linecap: round; transition: stroke-dashoffset 120ms linear; }
+  .ring .percent {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font: 600 12px var(--font-mono); color: var(--color-text-secondary);
+  }
+  .card.failed .card-face { color: var(--color-danger); }
+  .card.failed .file-glyph { color: rgba(235, 87, 87, 0.65); }
+  /* 卡片信息行 */
+  .card-info { display: flex; align-items: center; gap: 6px; padding: 8px 10px; min-width: 0; }
+  .card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+  .card-meta { padding: 0 10px 9px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .card-meta .size { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-meta .icon-button { width: 20px; height: 20px; opacity: 0; transition: opacity var(--transition-fast); }
+  .card:hover .card-meta .icon-button, .card:focus-within .card-meta .icon-button { opacity: 1; }
+  .card-error { padding: 0 10px 9px; color: var(--color-danger); font-size: 11.5px; }
+  .card-error .actions { display: flex; gap: 6px; margin-top: 5px; }
+  .card-error .chip { padding: 2px 9px; font-size: 11.5px; }
+
+  /* ══════════ 方案 B:统一紧凑列表 ══════════ */
+  .row-list { display: grid; gap: 6px; }
+  .row {
+    display: flex; align-items: center; gap: 10px; min-width: 0;
+    padding: 7px 10px; border: 1px solid var(--color-border-weak); border-radius: var(--radius-md);
+    background: var(--color-surface-sunken);
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .row:hover { background: var(--color-hover); border-color: var(--color-border); }
+  .row.failed { border-color: rgba(235, 87, 87, 0.55); }
+  .row-thumb {
+    flex: none; width: 44px; height: 33px; border-radius: var(--radius-sm); overflow: hidden;
+    border: 1px solid var(--color-border-weak); background: var(--color-surface-raised);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .row-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .row-thumb .file-glyph svg { width: 18px; height: 18px; }
+  .row-main { flex: 1; min-width: 0; display: grid; gap: 3px; }
+  .row-line1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .row-title a { color: inherit; text-decoration: none; }
+  .row-title a:hover { color: var(--color-primary-strong); }
+  .row-line1 .size { flex: none; }
+  .row-line1 .state { flex: none; margin-left: auto; color: var(--color-primary-strong); font: 500 11.5px var(--font-mono); }
+  .row-bar { display: block; height: 3px; border-radius: 2px; background: var(--color-border-weak); overflow: hidden; }
+  .row-bar i { display: block; height: 100%; background: var(--color-primary); transition: width 120ms linear; }
+  .row-bar i.danger { background: var(--color-danger); }
+  .row-actions { flex: none; display: flex; align-items: center; gap: 2px; }
+  .row-actions .icon-button { opacity: 0; }
+  .row:hover .icon-button, .row:focus-within .icon-button { opacity: 1; }
+  .row-error { color: var(--color-danger); font-size: 12px; display: flex; gap: 10px; align-items: center; }
+  .row-error .chip { padding: 2px 9px; font-size: 11.5px; }
+
+  .block-hint { margin: 14px 0 0; color: var(--color-text-muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="draft-note">
+    <span>设计稿 · 任务详情页「附件」区块 —— 同一份数据的两种方案,可切换对比,进度为演示动画。</span>
+    <span class="spacer"></span>
+    <span class="scheme-switch">
+      <button id="tab-a" class="on" type="button">方案 A · 卡片网格</button>
+      <button id="tab-b" type="button">方案 B · 紧凑列表</button>
+    </span>
+  </div>
+
+  <section class="block">
+    <div class="block-head">
+      <h2>附件</h2><span class="count" id="count">5</span>
+      <span class="summary" id="summary">5 个 · 33.9 MB</span>
+      <span class="spacer"></span>
+      <button class="ghost" type="button">＋ 上传附件</button>
+    </div>
+
+    <!-- ═══ 方案 A ═══ -->
+    <div id="scheme-a">
+      <div class="card-grid">
+        <!-- 图片 -->
+        <div class="card" tabindex="0">
+          <div class="card-face">
+            <svg class="thumb" viewBox="0 0 320 240" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+              <rect width="320" height="240" fill="#eef1f6"/>
+              <rect x="16" y="16" width="180" height="12" rx="6" fill="#c6cddd"/>
+              <rect x="16" y="40" width="288" height="1" fill="#d8dde8"/>
+              <rect x="16" y="56" width="130" height="36" rx="6" fill="#dbe2ee"/>
+              <rect x="16" y="102" width="288" height="1" fill="#d8dde8"/>
+              <rect x="16" y="118" width="220" height="36" rx="6" fill="#dbe2ee"/>
+              <rect x="176" y="118" width="128" height="36" rx="6" fill="#5e6ad2" opacity="0.85"/>
+              <rect x="16" y="164" width="90" height="36" rx="6" fill="#dbe2ee"/>
+              <rect x="196" y="180" width="108" height="44" rx="8" fill="#c6cddd"/>
+            </svg>
+            <span class="hover-tools">
+              <button class="icon-button" title="预览大图" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+              <button class="icon-button" title="下载原图" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+              <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+            </span>
+          </div>
+          <div class="card-info"><span class="card-title" title="截屏2026-09-03 09.41.23.png">截屏2026-09-03 09.41.23.png</span></div>
+          <div class="card-meta"><span class="size">1.2 MB · PNG</span>
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </div>
+        </div>
+        <!-- 图片 2 -->
+        <div class="card" tabindex="0">
+          <div class="card-face">
+            <svg class="thumb" viewBox="0 0 320 240" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+              <rect width="320" height="240" fill="#101216"/>
+              <rect x="20" y="20" width="120" height="10" rx="5" fill="#3b4252"/>
+              <rect x="20" y="44" width="280" height="2" fill="#262b33"/>
+              <rect x="20" y="60" width="96" height="18" rx="4" fill="#2e3440"/>
+              <rect x="124" y="60" width="72" height="18" rx="4" fill="#3b4252"/>
+              <rect x="20" y="94" width="280" height="2" fill="#262b33"/>
+              <rect x="20" y="110" width="200" height="10" rx="5" fill="#4c566a"/>
+              <rect x="20" y="130" width="160" height="10" rx="5" fill="#3b4252"/>
+              <rect x="20" y="158" width="56" height="20" rx="5" fill="#5e6ad2"/>
+              <rect x="240" y="150" width="60" height="70" rx="6" fill="#1c2027"/>
+            </svg>
+            <span class="hover-tools">
+              <button class="icon-button" title="预览大图" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+              <button class="icon-button" title="下载原图" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+              <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+            </span>
+          </div>
+          <div class="card-info"><span class="card-title" title="白板-架构评审.png">白板-架构评审.png</span></div>
+          <div class="card-meta"><span class="size">486 KB · PNG</span>
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </div>
+        </div>
+        <!-- 大文件 -->
+        <div class="card" tabindex="0">
+          <div class="card-face">
+            <span class="file-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg></span>
+            <span class="ext-badge">LOG</span>
+          </div>
+          <div class="card-info"><span class="card-title" title="app.log.2026-09-03.log">app.log.2026-09-03.log</span></div>
+          <div class="card-meta"><span class="size">23.5 MB</span>
+            <button class="icon-button" title="分段下载" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </div>
+        </div>
+        <!-- PDF -->
+        <div class="card" tabindex="0">
+          <div class="card-face">
+            <span class="file-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg></span>
+            <span class="ext-badge">PDF</span>
+          </div>
+          <div class="card-info"><span class="card-title" title="验收报告-v3.pdf">验收报告-v3.pdf</span></div>
+          <div class="card-meta"><span class="size">8.6 MB</span>
+            <button class="icon-button" title="分段下载" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </div>
+        </div>
+        <!-- 表格 -->
+        <div class="card" tabindex="0">
+          <div class="card-face">
+            <span class="file-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg></span>
+            <span class="ext-badge">XLS</span>
+          </div>
+          <div class="card-info"><span class="card-title" title="排期表.xlsx">排期表.xlsx</span></div>
+          <div class="card-meta"><span class="size">92 KB</span>
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </div>
+        </div>
+        <!-- 上传中 -->
+        <div class="card" tabindex="0">
+          <div class="card-face">
+            <div class="ring">
+              <svg viewBox="0 0 64 64" aria-hidden="true"><circle class="track" cx="32" cy="32" r="26"/><circle class="value" id="a-ring" cx="32" cy="32" r="26"/></svg>
+              <span class="percent" id="a-ring-percent">0%</span>
+            </div>
+            <span class="ext-badge">LOG</span>
+          </div>
+          <div class="card-info"><span class="card-title" title="error-dump.log">error-dump.log</span></div>
+          <div class="card-meta"><span class="size" id="a-up-meta">0 B / 12.4 MB</span>
+            <button class="icon-button" title="取消上传" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </div>
+        </div>
+        <!-- 失败 -->
+        <div class="card failed" tabindex="0">
+          <div class="card-face">
+            <span class="file-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+            <span class="ext-badge" style="background: rgba(235,87,87,0.14); color: var(--color-danger);">TXT</span>
+          </div>
+          <div class="card-info"><span class="card-title" title="crash-report.txt">crash-report.txt</span></div>
+          <div class="card-error">
+            上传中断:分片校验失败,已保留断点
+            <span class="actions">
+              <button class="chip" type="button">续传重试</button>
+              <button class="chip danger" type="button">移除</button>
+            </span>
+          </div>
+        </div>
+      </div>
+      <p class="scheme-caption"><b>方案 A</b>:图片与文件同一张卡,预览区放缩略图 / 类型徽标 / 环形进度,悬停出操作 —— 形态完全统一,图片浏览性最好;占纵向空间略多。</p>
+    </div>
+
+    <!-- ═══ 方案 B ═══ -->
+    <div id="scheme-b" hidden>
+      <div class="row-list">
+        <div class="row">
+          <span class="row-thumb">
+            <svg viewBox="0 0 320 240" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><rect width="320" height="240" fill="#eef1f6"/><rect x="16" y="16" width="180" height="12" rx="6" fill="#c6cddd"/><rect x="16" y="40" width="288" height="1" fill="#d8dde8"/><rect x="16" y="56" width="130" height="36" rx="6" fill="#dbe2ee"/><rect x="16" y="102" width="288" height="1" fill="#d8dde8"/><rect x="176" y="118" width="128" height="36" rx="6" fill="#5e6ad2" opacity="0.85"/></svg>
+          </span>
+          <span class="row-main">
+            <span class="row-line1"><span class="row-title"><a href="#" title="截屏2026-09-03 09.41.23.png">截屏2026-09-03 09.41.23.png</a></span><span class="size">1.2 MB</span></span>
+          </span>
+          <span class="row-actions">
+            <button class="icon-button" title="预览大图" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </span>
+        </div>
+        <div class="row">
+          <span class="row-thumb">
+            <svg viewBox="0 0 320 240" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><rect width="320" height="240" fill="#101216"/><rect x="20" y="20" width="120" height="10" rx="5" fill="#3b4252"/><rect x="20" y="60" width="96" height="18" rx="4" fill="#2e3440"/><rect x="20" y="110" width="200" height="10" rx="5" fill="#4c566a"/><rect x="20" y="158" width="56" height="20" rx="5" fill="#5e6ad2"/></svg>
+          </span>
+          <span class="row-main">
+            <span class="row-line1"><span class="row-title"><a href="#" title="白板-架构评审.png">白板-架构评审.png</a></span><span class="size">486 KB</span></span>
+          </span>
+          <span class="row-actions">
+            <button class="icon-button" title="预览大图" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </span>
+        </div>
+        <div class="row">
+          <span class="row-thumb"><span class="ext-badge">LOG</span></span>
+          <span class="row-main">
+            <span class="row-line1"><span class="row-title"><a href="#" title="app.log.2026-09-03.log">app.log.2026-09-03.log</a></span><span class="size">23.5 MB</span></span>
+          </span>
+          <span class="row-actions">
+            <button class="icon-button" title="分段下载" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </span>
+        </div>
+        <!-- 下载中:行内进度 -->
+        <div class="row">
+          <span class="row-thumb"><span class="ext-badge">PDF</span></span>
+          <span class="row-main">
+            <span class="row-line1"><span class="row-title">验收报告-v3.pdf</span><span class="size">8.6 MB</span><span class="state" id="b-dl-state">下载中 0%</span></span>
+            <span class="row-bar"><i id="b-dl-bar" style="width: 0%"></i></span>
+          </span>
+          <span class="row-actions">
+            <button class="icon-button" title="取消下载" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </span>
+        </div>
+        <div class="row">
+          <span class="row-thumb"><span class="ext-badge">XLS</span></span>
+          <span class="row-main">
+            <span class="row-line1"><span class="row-title"><a href="#" title="排期表.xlsx">排期表.xlsx</a></span><span class="size">92 KB</span></span>
+          </span>
+          <span class="row-actions">
+            <button class="icon-button danger" title="删除附件" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></button>
+          </span>
+        </div>
+        <!-- 上传中 -->
+        <div class="row">
+          <span class="row-thumb"><span class="ext-badge">LOG</span></span>
+          <span class="row-main">
+            <span class="row-line1"><span class="row-title">error-dump.log</span><span class="size" id="b-up-meta">0 B / 12.4 MB</span><span class="state" id="b-up-state">0%</span></span>
+            <span class="row-bar"><i id="b-up-bar" style="width: 0%"></i></span>
+          </span>
+          <span class="row-actions">
+            <button class="icon-button" title="取消上传" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </span>
+        </div>
+        <!-- 失败 -->
+        <div class="row failed">
+          <span class="row-thumb"><span class="ext-badge" style="background: rgba(235,87,87,0.14); color: var(--color-danger);">TXT</span></span>
+          <span class="row-main">
+            <span class="row-error">
+              crash-report.txt · 3.1 MB — 上传中断:分片校验失败,已保留断点
+              <button class="chip" type="button">续传重试</button>
+              <button class="chip danger" type="button">移除</button>
+            </span>
+          </span>
+        </div>
+      </div>
+      <p class="scheme-caption"><b>方案 B</b>:所有附件一行一个,左侧 44px 小缩略图/类型徽标,悬停出操作 —— 紧凑、大量文件时效率高,进度直接长在行内;图片浏览性弱一些。</p>
+    </div>
+
+    <p class="block-hint">图片直接预览,日志和其他文件可下载查看,单个不超过 50MB,支持断点续传。</p>
+  </section>
+</div>
+
+<script>
+  // 方案切换
+  const tabA = document.getElementById('tab-a');
+  const tabB = document.getElementById('tab-b');
+  const schemeA = document.getElementById('scheme-a');
+  const schemeB = document.getElementById('scheme-b');
+  tabA.onclick = () => { tabA.classList.add('on'); tabB.classList.remove('on'); schemeA.hidden = false; schemeB.hidden = true; };
+  tabB.onclick = () => { tabB.classList.add('on'); tabA.classList.remove('on'); schemeB.hidden = false; schemeA.hidden = true; };
+
+  // 演示动画:上传环形/条形进度 + 下载条形进度
+  const fmt = (bytes) => (bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB');
+  const total = 12.4 * 1048576;
+  let uploaded = 0;
+  const ring = document.getElementById('a-ring');
+  const circumference = 2 * Math.PI * 26;
+  ring.style.strokeDasharray = String(circumference);
+
+  let downloadPct = 0;
+  const tick = setInterval(() => {
+    // 上传:约 1.8MB/s 且轻微波动
+    uploaded = Math.min(total, uploaded + 1048576 * 1.8 * 0.12 * (0.8 + Math.random() * 0.4));
+    const pct = uploaded / total;
+    ring.style.strokeDashoffset = String(circumference * (1 - pct));
+    document.getElementById('a-ring-percent').textContent = Math.round(pct * 100) + '%';
+    document.getElementById('a-up-meta').textContent = `${fmt(uploaded)} / 12.4 MB · 1.8 MB/s`;
+    document.getElementById('b-up-bar').style.width = (pct * 100).toFixed(1) + '%';
+    document.getElementById('b-up-state').textContent = Math.round(pct * 100) + '%';
+    document.getElementById('b-up-meta').textContent = `${fmt(uploaded)} / 12.4 MB`;
+    if (uploaded >= total) { setTimeout(() => { uploaded = 0; }, 1200); }
+
+    // 下载:8.6MB 文件按段拉取演示
+    downloadPct = (downloadPct + 1.7) % 100;
+    document.getElementById('b-dl-bar').style.width = downloadPct.toFixed(1) + '%';
+    document.getElementById('b-dl-state').textContent = `下载中 ${Math.round(downloadPct)}%`;
+  }, 120);
+</script>
+</body>
+</html>

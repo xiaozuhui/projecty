@@ -77,9 +77,10 @@
   // 行内编辑挂载后自动聚焦:标题全选,描述落在文末。
   let titleInputEl = $state<HTMLInputElement | null>(null);
   let descInputEl = $state<HTMLTextAreaElement | null>(null);
-  // 分片上传进行中的任务列表:任务/评论附件在附件区显示进度条,子任务弹窗附件在底部按钮显示总进度。
+  // 分片上传任务列表:task/pending 在附件区与评论框显示行内进度,subtask 在弹窗按钮显示总进度。
   type UploadTask = {
     key: string;
+    file: File;
     name: string;
     size: number;
     uploadedBytes: number;
@@ -88,7 +89,7 @@
     error: string | null;
     done: boolean;
     cancelled: boolean;
-    scope: 'task' | 'subtask';
+    scope: 'task' | 'pending' | 'subtask';
     controller: AbortController;
   };
   let uploadTasks = $state<UploadTask[]>([]);
@@ -131,12 +132,10 @@
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
-  const fileIcon = (name: string) => {
-    const extension = name.split('.').pop()?.toLowerCase();
-    if (extension === 'log' || extension === 'txt') return '≡';
-    if (['zip', 'gz', 'tar', 'rar', '7z'].includes(extension ?? '')) return '⌘';
-    if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv'].includes(extension ?? '')) return '▤';
-    return '↳';
+  // 行首类型徽标:扩展名前 4 位大写,无扩展名回退 FILE。
+  const fileExt = (name: string) => {
+    const extension = name.includes('.') ? (name.split('.').pop() ?? '') : '';
+    return extension ? extension.slice(0, 4).toUpperCase() : 'FILE';
   };
   const priorityOptions: { value: Priority; label: string }[] = [
     { value: 'urgent', label: '紧急' },
@@ -329,6 +328,7 @@
     subtaskComment = '';
     subtaskFiles = [];
     subtaskError = '';
+    uploadTasks = uploadTasks.filter((item) => item.scope !== 'subtask');
     if (subtaskFileInput) subtaskFileInput.value = '';
   }
 
@@ -406,22 +406,9 @@
       const uploaded: Attachment[] = [];
       for (const { file } of subtaskFiles) {
         const tracked = startUpload(file, 'subtask');
-        try {
-          uploaded.push(
-            await uploadTaskAttachmentResumable(createdTaskKey, file, {
-              onProgress: (progress) => {
-                tracked.uploadedBytes = progress.uploadedBytes;
-                tracked.speedBps = progress.speedBps;
-                tracked.retries = progress.retries;
-              }
-            })
-          );
-        } catch (error) {
-          tracked.error = error instanceof Error ? error.message : '附件上传失败';
-          throw error;
-        } finally {
-          tracked.done = true;
-        }
+        const uploadedAttachment = await runUpload(tracked, createdTaskKey);
+        if (!uploadedAttachment) throw new Error(tracked.error ?? '附件上传失败');
+        uploaded.push(uploadedAttachment);
       }
       if (subtaskComment.trim()) {
         await createComment(created.task_key, subtaskComment.trim(), uploaded.map((attachment) => attachment.id));
@@ -626,48 +613,70 @@
   }
 
   // 选中文件后立刻上传:详情页文件直接落库,评论附件先进暂存区,提交时一并关联。
-  // 分片上传带进度/取消,失败后重选同一文件可从已传分片续传。
+  // 分片上传带进度/取消,失败后可原地续传(服务端保留已传分片)。
   async function uploadFiles(event: Event, into: 'task' | 'pending') {
     const input = event.currentTarget as HTMLInputElement;
     const files = Array.from(input.files ?? []);
     input.value = '';
     if (!files.length) return;
     errorMessage = '';
-    uploadTasks = uploadTasks.filter((item) => !item.done);
     for (const file of files) {
       if (file.size > MAX_ATTACHMENT_BYTES) {
         errorMessage = `${file.name} 超过 50MB 上限`;
         continue;
       }
-      const tracked = startUpload(file, 'task');
-      try {
-        const created = await uploadTaskAttachmentResumable(taskKey, file, {
-          signal: tracked.controller.signal,
-          onProgress: (progress) => {
-            tracked.uploadedBytes = progress.uploadedBytes;
-            tracked.speedBps = progress.speedBps;
-            tracked.retries = progress.retries;
-          }
-        });
-        if (into === 'task') attachments = [...attachments, created];
-        else pending = [...pending, created];
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          tracked.cancelled = true;
-        } else {
-          tracked.error = error instanceof ApiClientError ? error.message : '附件上传失败';
-          errorMessage = `${file.name}：${tracked.error}`;
-        }
-      } finally {
-        tracked.done = true;
-      }
+      await runUpload(startUpload(file, into), taskKey);
     }
   }
 
-  // 入队一个上传任务并返回其代理引用(回调里原地更新进度)。
-  function startUpload(file: File, scope: 'task' | 'subtask'): UploadTask {
+  // 上传一个已入队任务:成功即收起进度行,新附件同时出现在列表里;
+  // 失败/取消保留进度行,供续传重试或手动移除(修复:完成后进度行常驻不消失)。
+  async function runUpload(tracked: UploadTask, targetKey: string): Promise<Attachment | null> {
+    try {
+      const created = await uploadTaskAttachmentResumable(targetKey, tracked.file, {
+        signal: tracked.controller.signal,
+        onProgress: (progress) => {
+          tracked.uploadedBytes = progress.uploadedBytes;
+          tracked.speedBps = progress.speedBps;
+          tracked.retries = progress.retries;
+        }
+      });
+      if (tracked.scope === 'task') attachments = [...attachments, created];
+      else if (tracked.scope === 'pending') pending = [...pending, created];
+      uploadTasks = uploadTasks.filter((item) => item !== tracked);
+      return created;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        tracked.cancelled = true;
+      } else {
+        tracked.error = error instanceof ApiClientError ? error.message : '附件上传失败';
+        if (tracked.scope !== 'subtask') errorMessage = `${tracked.name}：${tracked.error}`;
+      }
+      tracked.done = true;
+      return null;
+    }
+  }
+
+  // 失败/取消后续传:服务端会话仍在,已传分片不重传。
+  async function retryUpload(tracked: UploadTask) {
+    tracked.error = null;
+    tracked.cancelled = false;
+    tracked.done = false;
+    tracked.speedBps = 0;
+    tracked.retries = 0;
+    tracked.controller = new AbortController();
+    await runUpload(tracked, taskKey);
+  }
+
+  function dismissUpload(tracked: UploadTask) {
+    uploadTasks = uploadTasks.filter((item) => item !== tracked);
+  }
+
+  // 入队一个上传任务并返回其在响应式数组里的代理引用(回调里原地更新进度)。
+  function startUpload(file: File, scope: UploadTask['scope']): UploadTask {
     const entry: UploadTask = {
       key: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
       name: file.name,
       size: file.size,
       uploadedBytes: 0,
@@ -738,6 +747,71 @@
   </div>
 {:else if task}
   <div class="task-page">
+    {#snippet attachmentRow(item: Attachment, onRemove?: (item: Attachment) => void)}
+      <div class="file-row">
+        <span class="row-thumb">
+          {#if isImageAttachment(item)}
+            <img src={attachmentUrl(item.url)} alt={item.file_name} loading="lazy" />
+          {:else}
+            <span class="ext-badge">{fileExt(item.file_name)}</span>
+          {/if}
+        </span>
+        <span class="row-main">
+          <span class="row-line">
+            <span class="file-title" title={item.file_name}>
+              {#if isSegmentedDownload(item)}
+                <button class="as-button" type="button" disabled={Boolean(downloads[item.id])} onclick={() => saveAttachment(item)}>{item.file_name}</button>
+              {:else}
+                <a href={attachmentUrl(item.url)} target="_blank" rel="noreferrer">{item.file_name}</a>
+              {/if}
+            </span>
+            <small>{formatBytes(item.byte_size)}</small>
+            {#if downloads[item.id]}<small class="state">下载中 {downloadPercent(item)}%</small>{/if}
+          </span>
+          {#if downloads[item.id]}<span class="row-bar"><i style:width={`${downloadPercent(item)}%`}></i></span>{/if}
+        </span>
+        {#if onRemove}
+          <span class="row-actions">
+            <button class="icon-button danger" type="button" title={`删除 ${item.file_name}`} onclick={() => onRemove?.(item)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+            </button>
+          </span>
+        {/if}
+      </div>
+    {/snippet}
+
+    {#snippet uploadRow(item: UploadTask)}
+      {@const percent = item.size > 0 ? Math.min(100, Math.floor((item.uploadedBytes / item.size) * 100)) : 0}
+      {@const failed = Boolean(item.error) || item.cancelled}
+      <div class="file-row" class:failed>
+        <span class="row-thumb"><span class="ext-badge" class:danger={failed}>{fileExt(item.name)}</span></span>
+        <span class="row-main">
+          <span class="row-line">
+            <span class="file-title" title={item.name}>{item.name}</span>
+            {#if failed}
+              <small class="row-error">{item.cancelled ? '已取消' : item.error}</small>
+            {:else}
+              <small>{formatBytes(item.uploadedBytes)} / {formatBytes(item.size)}</small>
+              {#if item.speedBps > 0}<small>{formatBytes(item.speedBps)}/s</small>{/if}
+              {#if item.retries > 0}<small>重试中</small>{/if}
+              <small class="state">{percent}%</small>
+            {/if}
+          </span>
+          {#if !failed}<span class="row-bar"><i style:width={`${percent}%`}></i></span>{/if}
+        </span>
+        <span class="row-actions live">
+          {#if failed}
+            <button class="row-chip" type="button" onclick={() => void retryUpload(item)}>续传重试</button>
+            <button class="row-chip danger" type="button" onclick={() => dismissUpload(item)}>移除</button>
+          {:else}
+            <button class="icon-button" type="button" title="取消上传" onclick={() => cancelUpload(item)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          {/if}
+        </span>
+      </div>
+    {/snippet}
+
     <nav class="breadcrumb" aria-label="任务路径">
       <a href="/tasks">任务</a>
       <span>/</span>
@@ -863,67 +937,16 @@
               {uploading ? '上传中…' : '＋ 上传附件'}
             </button>
           </div>
-          {#if attachments.some(isImageAttachment)}
-            <div class="attachment-grid">
-              {#each attachments.filter(isImageAttachment) as item (item.id)}
-                <figure>
-                  <a href={attachmentUrl(item.url)} target="_blank" rel="noreferrer">
-                    <img src={attachmentUrl(item.url)} alt={item.file_name} loading="lazy" />
-                  </a>
-                  <figcaption>
-                    <span title={item.file_name}>{item.file_name}</span>
-                    <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
-                  </figcaption>
-                </figure>
-              {/each}
-            </div>
-          {/if}
-          {#if attachments.some((item) => !isImageAttachment(item))}
+          {#if attachments.length || uploadTasks.some((item) => item.scope === 'task')}
             <div class="file-list">
-              {#each attachments.filter((item) => !isImageAttachment(item)) as item (item.id)}
-                <div class="file-row">
-                  {#if isSegmentedDownload(item)}
-                    <button class="file-name as-button" type="button" title={item.file_name} disabled={Boolean(downloads[item.id])} onclick={() => saveAttachment(item)}>
-                      <span class="file-icon" aria-hidden="true">{fileIcon(item.file_name)}</span>
-                      <span class="file-title">{item.file_name}</span>
-                      <small>{downloads[item.id] ? `下载中 ${downloadPercent(item)}%` : formatBytes(item.byte_size)}</small>
-                    </button>
-                  {:else}
-                    <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name}>
-                      <span class="file-icon" aria-hidden="true">{fileIcon(item.file_name)}</span>
-                      <span class="file-title">{item.file_name}</span>
-                      <small>{formatBytes(item.byte_size)}</small>
-                    </a>
-                  {/if}
-                  <button class="text-button" type="button" onclick={() => removeAttachment(item)}>删除</button>
-                </div>
+              {#each attachments as item (item.id)}
+                {@render attachmentRow(item, removeAttachment)}
               {/each}
-            </div>
-          {/if}
-          {#if uploadTasks.some((item) => item.scope === 'task')}
-            <div class="upload-strip">
               {#each uploadTasks.filter((item) => item.scope === 'task') as item (item.key)}
-                <div class="upload-row" class:failed={Boolean(item.error) || item.cancelled}>
-                  <span class="file-icon" aria-hidden="true">{fileIcon(item.name)}</span>
-                  <span class="upload-meta">
-                    <span class="upload-name" title={item.name}>{item.name}</span>
-                    <span class="upload-bar"><i style:width={`${item.size > 0 ? Math.min(100, (item.uploadedBytes / item.size) * 100) : 0}%`}></i></span>
-                    <small>
-                      {formatBytes(item.uploadedBytes)} / {formatBytes(item.size)}
-                      {#if !item.done && item.speedBps > 0} · {formatBytes(item.speedBps)}/s{/if}
-                      {#if !item.done && item.retries > 0} · 重试中{/if}
-                    </small>
-                    {#if item.error}<small class="upload-error">{item.error}</small>{/if}
-                    {#if item.cancelled}<small class="upload-error">已取消</small>{/if}
-                  </span>
-                  {#if !item.done}
-                    <button class="text-button" type="button" onclick={() => cancelUpload(item)}>取消</button>
-                  {/if}
-                </div>
+                {@render uploadRow(item)}
               {/each}
             </div>
-          {/if}
-          {#if !attachments.length}
+          {:else}
             <p class="block-hint">图片直接预览,日志和其他文件可下载查看,单个不超过 50MB,支持断点续传。</p>
           {/if}
         </section>
@@ -937,27 +960,13 @@
           </div>
 
           <form class="composer" onsubmit={addComment}>
-            {#if pending.some(isImageAttachment)}
-              <div class="pending-images">
-                {#each pending.filter(isImageAttachment) as item (item.id)}
-                  <span class="pending-image">
-                    <img src={attachmentUrl(item.url)} alt={item.file_name} />
-                    <button class="text-button" type="button" aria-label={`移除 ${item.file_name}`} onclick={() => removePending(item)}>×</button>
-                  </span>
-                {/each}
-              </div>
-            {/if}
-            {#if pending.some((item) => !isImageAttachment(item))}
+            {#if pending.length || uploadTasks.some((item) => item.scope === 'pending')}
               <div class="file-list pending-files">
-                {#each pending.filter((item) => !isImageAttachment(item)) as item (item.id)}
-                  <div class="file-row">
-                    <a class="file-name" href={attachmentUrl(item.url)} title={item.file_name} target="_blank" rel="noreferrer">
-                      <span class="file-icon" aria-hidden="true">{fileIcon(item.file_name)}</span>
-                      <span class="file-title">{item.file_name}</span>
-                      <small>{formatBytes(item.byte_size)}</small>
-                    </a>
-                    <button class="text-button" type="button" aria-label={`移除 ${item.file_name}`} onclick={() => removePending(item)}>移除</button>
-                  </div>
+                {#each pending as item (item.id)}
+                  {@render attachmentRow(item, removePending)}
+                {/each}
+                {#each uploadTasks.filter((item) => item.scope === 'pending') as item (item.key)}
+                  {@render uploadRow(item)}
                 {/each}
               </div>
             {/if}
@@ -985,33 +994,10 @@
                       <button class="text-button" type="button" onclick={() => removeComment(item.comment)}>删除</button>
                     </div>
                     <p class="content">{@html renderComment(item.comment.body)}</p>
-                    {#if item.comment.attachments?.some(isImageAttachment)}
-                      <div class="comment-images">
-                        {#each item.comment.attachments.filter(isImageAttachment) as attachment (attachment.id)}
-                          <a href={attachmentUrl(attachment.url)} target="_blank" rel="noreferrer" title={attachment.file_name}>
-                            <img src={attachmentUrl(attachment.url)} alt={attachment.file_name} loading="lazy" />
-                          </a>
-                        {/each}
-                      </div>
-                    {/if}
-                    {#if item.comment.attachments?.some((attachment) => !isImageAttachment(attachment))}
+                    {#if item.comment.attachments?.length}
                       <div class="file-list comment-files">
-                        {#each item.comment.attachments.filter((attachment) => !isImageAttachment(attachment)) as attachment (attachment.id)}
-                          <div class="file-row">
-                            {#if isSegmentedDownload(attachment)}
-                              <button class="file-name as-button" type="button" title={attachment.file_name} disabled={Boolean(downloads[attachment.id])} onclick={() => saveAttachment(attachment)}>
-                                <span class="file-icon" aria-hidden="true">{fileIcon(attachment.file_name)}</span>
-                                <span class="file-title">{attachment.file_name}</span>
-                                <small>{downloads[attachment.id] ? `下载中 ${downloadPercent(attachment)}%` : formatBytes(attachment.byte_size)}</small>
-                              </button>
-                            {:else}
-                              <a class="file-name" href={attachmentUrl(attachment.url)} target="_blank" rel="noreferrer" title={attachment.file_name}>
-                                <span class="file-icon" aria-hidden="true">{fileIcon(attachment.file_name)}</span>
-                                <span class="file-title">{attachment.file_name}</span>
-                                <small>{formatBytes(attachment.byte_size)}</small>
-                              </a>
-                            {/if}
-                          </div>
+                        {#each item.comment.attachments as attachment (attachment.id)}
+                          {@render attachmentRow(attachment)}
                         {/each}
                       </div>
                     {/if}
@@ -1323,22 +1309,28 @@
     </label>
     <div class="subtask-attachments-field">
       <span>附件</span>
-      {#if subtaskFiles.some((item) => item.previewUrl)}
-        <div class="subtask-image-previews">
-          {#each subtaskFiles.filter((item) => item.previewUrl) as item (item.file.name + item.file.lastModified)}
-            <span class="subtask-image-preview">
-              <img src={item.previewUrl ?? ''} alt={item.file.name} />
-              <button type="button" aria-label={`移除 ${item.file.name}`} onclick={() => removeSubtaskFile(item)}>×</button>
-            </span>
-          {/each}
-        </div>
-      {/if}
-      {#if subtaskFiles.some((item) => !item.previewUrl)}
+      {#if subtaskFiles.length}
         <div class="file-list subtask-files">
-          {#each subtaskFiles.filter((item) => !item.previewUrl) as item (item.file.name + item.file.lastModified)}
+          {#each subtaskFiles as item, index (`${item.file.name}-${index}`)}
             <div class="file-row">
-              <span class="file-name"><span class="file-icon" aria-hidden="true">{fileIcon(item.file.name)}</span><span class="file-title">{item.file.name}</span><small>{formatBytes(item.file.size)}</small></span>
-              <button class="text-button" type="button" aria-label={`移除 ${item.file.name}`} onclick={() => removeSubtaskFile(item)}>移除</button>
+              <span class="row-thumb">
+                {#if item.previewUrl}
+                  <img src={item.previewUrl} alt={item.file.name} />
+                {:else}
+                  <span class="ext-badge">{fileExt(item.file.name)}</span>
+                {/if}
+              </span>
+              <span class="row-main">
+                <span class="row-line">
+                  <span class="file-title" title={item.file.name}>{item.file.name}</span>
+                  <small>{formatBytes(item.file.size)}</small>
+                </span>
+              </span>
+              <span class="row-actions live">
+                <button class="icon-button danger" type="button" aria-label={`移除 ${item.file.name}`} onclick={() => removeSubtaskFile(item)}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+                </button>
+              </span>
             </div>
           {/each}
         </div>
@@ -1450,34 +1442,38 @@
   .add-inline input { width: 100%; padding: 7px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-sunken); color: var(--color-text); font-size: 13px; }
   .add-inline input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--color-focus-ring); }
 
-  .attachment-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 10px; }
-  .attachment-grid figure { display: grid; gap: 6px; min-width: 0; margin: 0; }
-  .attachment-grid img, .comment-images img, .pending-images img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .attachment-grid a { display: block; aspect-ratio: 4 / 3; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; background: var(--color-surface-sunken); }
-  .attachment-grid a:hover { border-color: var(--color-border-strong); }
-  .attachment-grid figcaption { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--color-text-muted); }
-  .attachment-grid figcaption span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* ── 附件统一行列表(紧凑列表):小缩略图/类型徽标 + 行内进度 ── */
   .file-list { display: grid; gap: 6px; margin-bottom: 10px; }
-  .file-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); font-size: 13px; }
-  .file-name { display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--color-text); text-decoration: none; }
-  .file-name:hover .file-title { color: var(--color-primary); }
-  .file-icon { color: var(--color-text-muted); }
+  .file-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); font-size: 13px; transition: border-color var(--transition-fast); }
+  .file-row:hover { border-color: var(--color-border); }
+  .file-row.failed { border-color: color-mix(in srgb, var(--color-danger) 55%, transparent); }
+  .row-thumb { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 33px; border: 1px solid var(--color-border-weak); border-radius: var(--radius-sm); background: var(--color-surface-raised); overflow: hidden; }
+  .row-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .ext-badge { padding: 1px 5px; border-radius: var(--radius-sm); background: var(--color-primary-soft); color: var(--color-primary-strong); font: 600 9.5px var(--font-mono); letter-spacing: 0.05em; }
+  .ext-badge.danger { background: color-mix(in srgb, var(--color-danger) 14%, transparent); color: var(--color-danger); }
+  .row-main { display: grid; gap: 4px; flex: 1; min-width: 0; }
+  .row-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .file-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .file-name small { flex: none; color: var(--color-text-muted); font-size: 12px; }
-  /* 分段下载入口:大文件用按钮触发带进度的分段下载,小文件维持 <a> 直连 */
-  .file-name.as-button { background: none; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer; }
-  .file-name.as-button:hover .file-title { color: var(--color-primary); }
-  .file-name.as-button:disabled { cursor: default; }
-  /* 上传进度条 */
-  .upload-strip { display: grid; gap: 6px; margin-bottom: 10px; }
-  .upload-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--color-surface-sunken); border: 1px solid var(--color-border-weak); border-radius: var(--radius-md); font-size: 13px; }
-  .upload-meta { display: grid; gap: 4px; flex: 1; min-width: 0; }
-  .upload-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .upload-bar { width: 100%; height: 4px; border-radius: 2px; background: var(--color-hover); overflow: hidden; }
-  .upload-bar i { display: block; height: 100%; background: var(--color-primary); transition: width 150ms ease; }
-  .upload-row.failed .upload-bar i { background: var(--color-danger); }
-  .upload-row small { color: var(--color-text-muted); font-size: 12px; font-family: var(--font-mono); }
-  .upload-error { color: var(--color-danger); }
+  .file-title a { color: var(--color-text); text-decoration: none; }
+  .file-title a:hover { color: var(--color-primary-strong); }
+  .file-title .as-button { padding: 0; border: 0; background: none; font: inherit; color: var(--color-text); text-align: left; cursor: pointer; }
+  .file-title .as-button:hover { color: var(--color-primary-strong); }
+  .file-title .as-button:disabled { cursor: default; }
+  .row-line small { flex: none; color: var(--color-text-muted); font-size: 11.5px; font-family: var(--font-mono); }
+  .row-line .state { margin-left: auto; color: var(--color-primary-strong); }
+  .row-line .row-error { margin-left: auto; color: var(--color-danger); font-family: var(--font-ui); }
+  .row-bar { display: block; height: 3px; border-radius: 2px; background: var(--color-border-weak); overflow: hidden; }
+  .row-bar i { display: block; height: 100%; border-radius: inherit; background: var(--color-primary); transition: width 150ms ease; }
+  .row-actions { flex: none; display: inline-flex; align-items: center; gap: 4px; opacity: 0; transition: opacity var(--transition-fast); }
+  .file-row:hover .row-actions, .file-row:focus-within .row-actions, .row-actions.live { opacity: 1; }
+  .row-chip { padding: 2px 9px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: transparent; color: var(--color-text-secondary); font-size: 11.5px; cursor: pointer; }
+  .row-chip:hover { border-color: var(--color-border-strong); color: var(--color-text); }
+  .row-chip.danger:hover { border-color: var(--color-danger); color: var(--color-danger); }
+  .file-row .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); cursor: pointer; transition: color var(--transition-fast), background var(--transition-fast); }
+  .file-row .icon-button svg { width: 13px; height: 13px; }
+  .file-row .icon-button:hover { background: var(--color-hover); color: var(--color-text); }
+  .file-row .icon-button.danger:hover { color: var(--color-danger); }
+  .file-row .icon-button:disabled { opacity: 0.5; cursor: not-allowed; }
   .text-button { border: 0; background: transparent; color: var(--color-danger); font-size: 12px; font-weight: 500; cursor: pointer; }
   .text-button:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -1492,10 +1488,7 @@
   .composer-foot { display: flex; align-items: center; gap: 10px; }
   .composer-foot .hint { font-size: 12px; color: var(--color-text-muted); flex: 1; }
   .composer-foot .secondary-button, .composer-foot .primary-button { border: 0; }
-  .pending-images { display: flex; flex-wrap: wrap; gap: 8px; }
   .pending-files, .comment-files, .subtask-files { margin-top: 8px; }
-  .pending-image { position: relative; display: block; width: 96px; height: 72px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
-  .pending-image button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 14px; border-radius: var(--radius-sm); }
   .feed { display: grid; gap: 2px; }
   .event { display: flex; gap: 12px; padding: 9px 8px; margin: 0 -8px; border-radius: var(--radius-sm); }
   .event:hover { background: var(--color-hover); }
@@ -1509,9 +1502,6 @@
   .event .head .tag { flex: none; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
   .event .content { margin: 4px 0 0; white-space: pre-wrap; color: var(--color-text-secondary); line-height: 1.6; }
   .event .content :global(.mention) { padding: 0 2px; border-radius: var(--radius-sm); background: var(--color-primary-soft); color: var(--color-primary-strong); font-weight: 500; }
-  .comment-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .comment-images a { display: block; width: 96px; height: 72px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
-  .comment-images a:hover { border-color: var(--color-border-strong); }
   .event .detail { display: grid; gap: 3px; margin-top: 6px; width: fit-content; max-width: 100%; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--color-surface-sunken); font-family: var(--font-mono); font-size: 12px; color: var(--color-text-muted); }
   .event .detail b { color: var(--color-text-secondary); font-weight: 500; }
   .event .detail b::after { content: '：'; }
@@ -1578,10 +1568,6 @@
   .subtask-modal-form input, .subtask-modal-form textarea { width: 100%; min-width: 0; }
   .subtask-modal-form textarea { resize: vertical; }
   .subtask-form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .subtask-image-previews { display: flex; flex-wrap: wrap; gap: 8px; }
-  .subtask-image-preview { position: relative; display: block; width: 88px; height: 66px; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
-  .subtask-image-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .subtask-image-preview button { position: absolute; top: 2px; right: 2px; display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.65); color: #fff; cursor: pointer; }
   .subtask-attachments-field small { color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
   .error-message { color: var(--color-danger); font-size: 13px; }
 
