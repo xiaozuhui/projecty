@@ -15,7 +15,7 @@ Projecty 是一个面向单公司内部的项目管理系统，提供类 JIRA �
 
 - 后端：Rust + Axum + SeaORM + PostgreSQL（JWT 鉴权、Argon2 密码哈希）
 - 前端：SvelteKit + Svelte 5 + TypeScript + 原生 CSS
-- 部署：Docker Compose（前端、后端、PostgreSQL 三容器）
+- 部署：Docker Compose（后端+前端单镜像、PostgreSQL 两容器）
 
 ## 目录结构
 
@@ -37,16 +37,20 @@ cd frontend && npm install && npm run dev
 
 ## 部署
 
-前端与后端是两个独立应用，PostgreSQL 单独运行，由 Docker Compose 组合部署。浏览器只访问前端一个源，API 走同源相对路径 `/api/v1`，由前端容器内的 `hooks.server.ts` 反向代理转发到 Docker 网络内的后端容器，因此后端宿主机端口变化不影响浏览器侧。
+单镜像部署：前端构建为纯静态产物打进后端镜像，由 axum 直接托管（无 Node 运行时）；PostgreSQL 单独容器，Docker Compose 组合。浏览器只访问后端一个源，API 走同源相对路径 `/api/v1`。
+
+镜像在本地构建，服务器只加载、不编译。常规流程（服务器为 x86 时构建用 `DOCKER_PLATFORM=linux/amd64 ./build.sh`）：
 
 ```bash
-# 1. 准备配置：复制 deploy/docker/.env.example 为 .env，
-#    替换数据库账号密码、JWT 密钥与宿主机端口
-# 2. 构建并启动
-docker compose -f deploy/docker/compose.yml up -d --build
+# 1. 本地构建镜像
+./build.sh
+# 2. 流式导出上传(本地与服务器都不落盘)
+docker save projecty-backend:latest | gzip | ssh <服务器> 'gzip -dc | docker load'
+# 3. 服务器拉起(首次先复制 deploy/docker/.env.example 为 .env,填数据库与 JWT 配置)
+ssh <服务器> 'cd ~/projecty && docker compose -f deploy/docker/compose.yml up -d'
 ```
 
-默认地址：前端 `http://127.0.0.1:28080`，后端健康检查 `http://127.0.0.1:28081/healthz`。生产环境统一域名、HTTPS 时把网关指到前端端口即可。
+默认地址：页面 `http://<服务器IP>:28080`，健康检查 `http://<服务器IP>:28080/healthz`。
 
 ### 初始化超级管理员
 

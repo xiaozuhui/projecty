@@ -5,7 +5,8 @@ FROM node:22-bookworm-slim AS frontend
 WORKDIR /src/frontend
 
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund --registry=https://registry.npmmirror.com/
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund --registry=https://registry.npmmirror.com/
 COPY frontend ./
 
 RUN npm run build
@@ -30,8 +31,14 @@ COPY backend/entity/Cargo.toml backend/entity/Cargo.toml
 COPY backend/migrations/Cargo.toml backend/migrations/Cargo.toml
 
 # 复制源码后编译后端 API(migration 已作为依赖编译进二进制,启动时自动应用)。
+# 缓存挂载跨构建保留 target/ 与 registry,交叉构建(QEMU 仿真)下增量重编只动改过的 crate;
+# 挂载内容不进镜像层,产物需在同一 RUN 里拷出。缓存 id 按 TARGETARCH 隔离,防止混架构缓存。
+ARG TARGETARCH
 COPY backend backend
-RUN cargo build --release -p projecty-api
+RUN --mount=type=cache,id=cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-target-${TARGETARCH},target=/src/target \
+    cargo build --release -p projecty-api \
+    && cp /src/target/release/projecty-api /usr/local/bin/projecty-api
 
 # ---- 运行时:单镜像 = API + 前端静态文件 ----
 FROM debian:bookworm-slim AS runtime
@@ -42,7 +49,7 @@ RUN apt-get update \
     && mkdir -p /var/lib/projecty/uploads \
     && chown -R projecty:projecty /var/lib/projecty
 
-COPY --from=builder /src/target/release/projecty-api /usr/local/bin/projecty-api
+COPY --from=builder /usr/local/bin/projecty-api /usr/local/bin/projecty-api
 COPY --from=frontend /src/frontend/build /usr/share/projecty/static
 
 ENV PROJECTY_UPLOAD_DIR=/var/lib/projecty/uploads
